@@ -133,14 +133,24 @@ PYEOF
     test_fail "HOME='$sandbox_home' — expected /home/claude-sandbox"
   fi
 
-  # Real host home is not accessible
+  # Real host home is not accessible (except project dir mount point if project is under host home)
   local real_home="$HOME"
-  local real_home_count
-  real_home_count="$(sandbox_output "ls -A '${real_home}' 2>/dev/null | wc -l" | tr -d '[:space:]')"
-  if [[ "$real_home_count" == "0" ]] || [[ -z "$real_home_count" ]]; then
+  local real_home_contents
+  real_home_contents="$(sandbox_output "ls -A '${real_home}' 2>/dev/null" | tr -d '[:space:]')"
+  if [[ -z "$real_home_contents" ]]; then
     test_pass "Host home ($real_home) is empty/inaccessible (masked by tmpfs)"
+  elif [[ "${PROJECT_DIR}" == "${real_home}/"* ]]; then
+    # When the project dir is under host home, bwrap creates intermediate
+    # directories on the tmpfs for the bind mount — that's expected
+    local project_subdir="${PROJECT_DIR#${real_home}/}"
+    project_subdir="${project_subdir%%/*}"
+    if [[ "$real_home_contents" == "$project_subdir" ]]; then
+      test_pass "Host home ($real_home) only contains project mount point (masked by tmpfs)"
+    else
+      test_fail "Host home ($real_home) has unexpected items: $real_home_contents"
+    fi
   else
-    test_fail "Host home ($real_home) has $real_home_count visible items"
+    test_fail "Host home ($real_home) has visible items: $real_home_contents"
   fi
 
   # Sandbox home is writable

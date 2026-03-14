@@ -168,30 +168,17 @@ cleanup() {
 trap cleanup EXIT INT TERM HUP
 
 "${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/projects"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/debug"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/todos"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/statsig"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/shell-snapshots"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/file-history"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/cache"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/backups"
-"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude/plugins"
 
-# Copy settings (writable — Claude Code needs to update permissions etc.)
-if [[ -f "$HOME/.claude/settings.json" ]]; then
-  cp "$HOME/.claude/settings.json" "${SANDBOX_TMPDIR}/home/.claude/settings.json"
-fi
-if [[ -f "$HOME/.claude/settings.local.json" ]]; then
-  cp "$HOME/.claude/settings.local.json" "${SANDBOX_TMPDIR}/home/.claude/settings.local.json"
-fi
-if [[ -f "$HOME/.claude/keybindings.json" ]]; then
-  cp "$HOME/.claude/keybindings.json" "${SANDBOX_TMPDIR}/home/.claude/keybindings.json"
-fi
+# Copy files that Claude Code needs to write to at runtime
 if [[ -f "$HOME/.claude.json" ]]; then
   cp "$HOME/.claude.json" "${SANDBOX_TMPDIR}/home/.claude.json"
 fi
+"${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.claude"
+for settings_file in settings.json settings.local.json keybindings.json; do
+  if [[ -f "$HOME/.claude/${settings_file}" ]]; then
+    cp "$HOME/.claude/${settings_file}" "${SANDBOX_TMPDIR}/home/.claude/${settings_file}"
+  fi
+done
 
 # Sanitize gitconfig
 source "${LIB_DIR}/sanitize-git.sh"
@@ -284,10 +271,25 @@ BWRAP_ARGS+=(--bind "${SANDBOX_TMPDIR}/home" "/home/${SANDBOX_NAME}")
 # Must come AFTER --tmpfs /home so it overlays on top when project is under /home
 BWRAP_ARGS+=(--bind "$PROJECT_DIR" "$PROJECT_DIR")
 
-# -- Filesystem: credentials (READ-ONLY bind from host) --
-if [[ -f "$HOME/.claude/.credentials.json" ]]; then
-  BWRAP_ARGS+=(--ro-bind "$HOME/.claude/.credentials.json" "/home/${SANDBOX_NAME}/.claude/.credentials.json")
+# -- Filesystem: Claude config (READ-ONLY base from host) --
+# Mount the entire ~/.claude so skills, agents, hooks, CLAUDE.md, MCP config etc. are available
+if [[ -d "$HOME/.claude" ]]; then
+  BWRAP_ARGS+=(--ro-bind "$HOME/.claude" "/home/${SANDBOX_NAME}/.claude")
 fi
+
+# -- Filesystem: writable Claude subdirs (overlay tmpfs on top of ro-bind) --
+# Claude Code needs to write to these directories at runtime
+for writable_dir in projects debug todos statsig shell-snapshots file-history cache backups plugins; do
+  BWRAP_ARGS+=(--tmpfs "/home/${SANDBOX_NAME}/.claude/${writable_dir}")
+done
+
+# Copy writable settings into the sandbox (Claude Code updates permissions etc.)
+# These must come after the ro-bind so they overlay on top
+for settings_file in settings.json settings.local.json keybindings.json; do
+  if [[ -f "$HOME/.claude/${settings_file}" ]]; then
+    BWRAP_ARGS+=(--bind "${SANDBOX_TMPDIR}/home/.claude/${settings_file}" "/home/${SANDBOX_NAME}/.claude/${settings_file}")
+  fi
+done
 
 # -- Filesystem: mask sensitive host directories --
 BWRAP_ARGS+=(--tmpfs "/home/${SANDBOX_NAME}/.ssh")
