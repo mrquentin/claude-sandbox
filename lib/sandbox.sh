@@ -246,14 +246,15 @@ if [[ -d /etc/pki && ! -L /etc/pki ]]; then
   BWRAP_ARGS+=(--ro-bind /etc/pki /etc/pki)
 fi
 
-# -- Filesystem: project directory (READ-WRITE) --
-BWRAP_ARGS+=(--bind "$PROJECT_DIR" "$PROJECT_DIR")
-
 # -- Filesystem: sandbox home (READ-WRITE) --
 # /home is read-only from the base bind; we need a writable /home
 # so bwrap can create the mount point for the sandbox user home
 BWRAP_ARGS+=(--tmpfs /home)
 BWRAP_ARGS+=(--bind "${SANDBOX_TMPDIR}/home" "/home/${SANDBOX_NAME}")
+
+# -- Filesystem: project directory (READ-WRITE) --
+# Must come AFTER --tmpfs /home so it overlays on top when project is under /home
+BWRAP_ARGS+=(--bind "$PROJECT_DIR" "$PROJECT_DIR")
 
 # -- Filesystem: credentials (READ-ONLY bind from host) --
 if [[ -f "$HOME/.claude/.credentials.json" ]]; then
