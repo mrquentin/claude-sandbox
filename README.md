@@ -46,6 +46,7 @@ OPTIONS:
     --extra-bind DIR  Additional read-write bind mount (repeatable)
     --extra-ro DIR    Additional read-only bind mount (repeatable)
     --yolo            Run claude with --dangerously-skip-permissions
+    --security-test   Run security validation tests inside the sandbox
     --verbose, -v     Print sandbox configuration before launch
 ```
 
@@ -69,7 +70,28 @@ claude-sandbox --dry-run ~/projects/myapp
 
 # Verbose output showing sandbox configuration
 claude-sandbox -v ~/projects/myapp
+
+# Run security validation tests (verifies all isolation properties)
+claude-sandbox --security-test ~/projects/myapp
 ```
+
+### Security Tests
+
+The `--security-test` flag builds the full sandbox configuration and runs validation tests inside it:
+
+```bash
+claude-sandbox --security-test ~/projects/myapp
+```
+
+Tests verify:
+- **Filesystem isolation** — host filesystem is read-only, project dir is writable
+- **Home isolation** — host home is masked, sandbox home is isolated
+- **Credential masking** — `.ssh`, `.gnupg`, `.aws`, `.kube` directories are empty
+- **Namespace isolation** — PID, UTS (hostname), user namespace separation
+- **Capability dropping** — all capabilities are zeroed
+- **Seccomp enforcement** — `mount()`, `ptrace()`, `chroot()`, `personality()` blocked (requires `default` or `full` profile for syscall-level tests)
+- **WSL2 drive masking** — Windows drives inaccessible (WSL2 only)
+- **Git config sanitization** — dangerous sections stripped
 
 ## Tool Profiles
 
@@ -178,7 +200,8 @@ claude-sandbox
 │   ├── sandbox.sh         # Main bwrap wrapper (entry point)
 │   ├── detect.sh          # Environment detection (WSL2, namespaces, FUSE)
 │   ├── sanitize-git.sh    # Git config sanitizer
-│   ├── healthcheck.sh     # Self-test suite
+│   ├── healthcheck.sh     # Health check suite
+│   ├── security-tests.sh  # Security validation tests
 │   └── seccomp.nix        # Seccomp BPF filter generator
 └── modules/
     └── nixos.nix          # NixOS module

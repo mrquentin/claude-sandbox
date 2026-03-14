@@ -88,6 +88,7 @@
               cp detect.sh $out/lib/
               cp sanitize-git.sh $out/lib/
               cp healthcheck.sh $out/lib/
+              cp security-tests.sh $out/lib/
               chmod +x $out/lib/*.sh
 
               # Install seccomp profile (must succeed — sandbox refuses to start without it)

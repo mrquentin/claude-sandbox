@@ -42,6 +42,7 @@ OPTIONS:
     --extra-bind DIR  Additional read-write bind mount (repeatable)
     --extra-ro DIR    Additional read-only bind mount (repeatable)
     --yolo            Run claude with --dangerously-skip-permissions
+    --security-test   Run security validation tests inside the sandbox
     --verbose, -v     Print sandbox configuration before launch
 
 EXAMPLES:
@@ -69,6 +70,7 @@ DRY_RUN=0
 VERBOSE="${CLAUDE_SANDBOX_VERBOSE:-0}"
 YOLO_MODE=0
 RUN_TEST=0
+RUN_SECURITY_TEST=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
       fi
       EXTRA_RO_BINDS+=("$2"); shift 2 ;;
     --yolo)        YOLO_MODE=1; shift ;;
+    --security-test) RUN_SECURITY_TEST=1; shift ;;
     --verbose|-v)  VERBOSE=1; shift ;;
     --)
       shift
@@ -409,6 +412,14 @@ if [[ "$VERBOSE" == "1" ]]; then
     echo "│ ⚠ SSH agent: socket is fully functional inside sandbox"
   fi
   echo "╰──────────────────────────────────────────────────────────"
+fi
+
+# ── Security test mode ──────────────────────────────────────────────
+# Runs AFTER BWRAP_ARGS is fully built, so tests use the real config.
+if [[ "$RUN_SECURITY_TEST" == "1" ]]; then
+  source "${LIB_DIR}/security-tests.sh"
+  run_security_tests
+  exit $?
 fi
 
 # ── Dry run mode ────────────────────────────────────────────────────
