@@ -41,12 +41,13 @@ OPTIONS:
     --no-ssh-agent    Do not forward SSH_AUTH_SOCK
     --extra-bind DIR  Additional read-write bind mount (repeatable)
     --extra-ro DIR    Additional read-only bind mount (repeatable)
+    --yolo            Run claude with --dangerously-skip-permissions
     --overlay         Enable fuse-overlayfs overlay (experimental)
     --verbose, -v     Print sandbox configuration before launch
 
 EXAMPLES:
     claude-sandbox ~/projects/myapp
-    claude-sandbox ~/projects/myapp -- claude --dangerously-skip-permissions
+    claude-sandbox --yolo ~/projects/myapp
     claude-sandbox --extra-ro ~/.aws ~/projects/infra
     claude-sandbox test
 
@@ -66,6 +67,7 @@ FORWARD_SSH=1
 DRY_RUN=0
 VERBOSE="${CLAUDE_SANDBOX_VERBOSE:-0}"
 OVERLAY_MODE=0
+YOLO_MODE=0
 RUN_TEST=0
 
 while [[ $# -gt 0 ]]; do
@@ -76,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     --no-ssh-agent) FORWARD_SSH=0; shift ;;
     --extra-bind)  EXTRA_BINDS+=("$2"); shift 2 ;;
     --extra-ro)    EXTRA_RO_BINDS+=("$2"); shift 2 ;;
+    --yolo)        YOLO_MODE=1; shift ;;
     --overlay)     OVERLAY_MODE=1; shift ;;
     --verbose|-v)  VERBOSE=1; shift ;;
     --)            shift; COMMAND=("$@"); break ;;
@@ -114,9 +117,13 @@ if [[ ! -d "$PROJECT_DIR" ]]; then
   exit 1
 fi
 
-# Default command: claude
+# Default command: claude (with --dangerously-skip-permissions in yolo mode)
 if [[ ${#COMMAND[@]} -eq 0 ]]; then
-  COMMAND=("claude")
+  if [[ "$YOLO_MODE" == "1" ]]; then
+    COMMAND=("claude" "--dangerously-skip-permissions")
+  else
+    COMMAND=("claude")
+  fi
 fi
 
 # ── Environment detection ───────────────────────────────────────────
