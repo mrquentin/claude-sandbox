@@ -11,7 +11,7 @@ Provides namespace isolation, read-only filesystem enforcement, seccomp filterin
 - **Seccomp filtering** — Blocks ~30 dangerous syscalls (mount, ptrace, kexec, bpf, etc.)
 - **Credential protection** — OAuth credentials bind-mounted read-only; SSH keys, AWS/kube configs masked
 - **Git config sanitization** — Strips credential helpers, aliases, and include directives from .gitconfig
-- **WSL2 hardening** — Blocks Windows drive access and binfmt_misc interop
+- **WSL2 hardening** — Masks Windows drive mounts to block access to Windows binaries
 - **Tool profiles** — Minimal, default, and full tool sets
 - **NixOS module** — Declarative system-level configuration
 - **Self-test** — Built-in health check validates sandbox capabilities
@@ -45,6 +45,7 @@ OPTIONS:
     --no-ssh-agent    Do not forward SSH_AUTH_SOCK
     --extra-bind DIR  Additional read-write bind mount (repeatable)
     --extra-ro DIR    Additional read-only bind mount (repeatable)
+    --yolo            Run claude with --dangerously-skip-permissions
     --verbose, -v     Print sandbox configuration before launch
 ```
 
@@ -55,7 +56,7 @@ OPTIONS:
 claude-sandbox ~/projects/myapp
 
 # Run with dangerous permissions (still sandboxed at OS level)
-claude-sandbox ~/projects/myapp -- claude --dangerously-skip-permissions
+claude-sandbox --yolo ~/projects/myapp
 
 # Give read-only access to shared datasets
 claude-sandbox --extra-ro /data/datasets ~/projects/ml-project
@@ -123,24 +124,28 @@ Add to your `flake.nix`:
 | Capabilities       | All capabilities dropped (`--cap-drop ALL`)                   |
 | Seccomp            | Blocks mount, ptrace, kexec, bpf, perf, keyctl, and more     |
 | Credentials        | `.credentials.json` read-only bind; SSH/AWS/kube dirs masked  |
-| Git config         | Credential helpers, aliases, includes stripped                |
-| WSL2               | Windows drives masked; binfmt_misc interop blocked            |
+| Git config         | Credential helpers, aliases, includes, filter drivers stripped|
+| WSL2               | Windows drives masked; binary access blocked                  |
+| SSH agent          | Forwarded by default (use `--no-ssh-agent` to disable)        |
 | Process lifecycle  | `--die-with-parent` ensures cleanup; temp dirs scrubbed       |
 
 ### What's NOT restricted
 
-- **Network access** — Claude Code needs the Anthropic API. Network egress filtering is planned for a future release.
+- **Network access** — Claude Code needs the Anthropic API. Network egress filtering is planned for a future release. If `ANTHROPIC_API_KEY` is set, it is forwarded into the sandbox and could be exfiltrated via the unrestricted network.
 - **Project directory** — Full read-write access to the specified directory (that's the point).
+- **SSH agent** — When forwarded (default), the SSH agent socket is fully functional inside the sandbox. Use `--no-ssh-agent` to disable.
 
 ## Environment Variables
 
 | Variable                     | Description                           |
 |------------------------------|---------------------------------------|
-| `CLAUDE_SANDBOX_SSH_AGENT=0` | Disable SSH agent forwarding          |
-| `CLAUDE_SANDBOX_VERBOSE=1`   | Enable verbose output                 |
-| `ANTHROPIC_API_KEY`          | Forwarded into sandbox if set         |
-| `SANDBOX=1`                  | Set inside sandbox (for detection)    |
-| `CLAUDE_SANDBOX_VERSION`     | Version string set inside sandbox     |
+| `CLAUDE_SANDBOX_SSH_AGENT=0`   | Disable SSH agent forwarding                      |
+| `CLAUDE_SANDBOX_VERBOSE=1`     | Enable verbose output                              |
+| `CLAUDE_SANDBOX_NO_SECCOMP=1`  | Allow running without seccomp (not recommended)    |
+| `CLAUDE_SANDBOX_EXTRA_PATH`    | Additional PATH entries inside sandbox             |
+| `ANTHROPIC_API_KEY`            | Forwarded into sandbox if set                      |
+| `SANDBOX=1`                    | Set inside sandbox (for detection)                 |
+| `CLAUDE_SANDBOX_VERSION`       | Version string set inside sandbox                  |
 
 ## Requirements
 

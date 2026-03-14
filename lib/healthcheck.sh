@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # healthcheck.sh — Self-test for claude-sandbox
 # Sourced by sandbox.sh when 'test' subcommand is used.
+# Uses BWRAP, TOOL_PATH, SSL_CERT_FILE, SANDBOX_BASH, TRUE from caller;
+# falls back to Nix paths if not set.
 
-BWRAP="@BWRAP@"
-TOOL_PATH="@TOOL_PATH@"
-SSL_CERT_FILE="@SSL_CERT_FILE@"
-SANDBOX_BASH="@BASH@"
+: "${BWRAP:=@BWRAP@}"
+: "${TOOL_PATH:=@TOOL_PATH@}"
+: "${SSL_CERT_FILE:=@SSL_CERT_FILE@}"
+: "${SANDBOX_BASH:=@BASH@}"
+: "${TRUE:=@TRUE@}"
 GIT="@GIT@"
 CURL="@CURL@"
-TRUE="@TRUE@"
+GNUGREP="@GNUGREP@"
 
 PASS=0
 FAIL=0
@@ -45,7 +48,7 @@ run_healthcheck() {
     check_warn "PID namespace not available (sandbox will run without PID isolation)"
   fi
 
-  # 4. Full sandbox test
+  # 4. Full sandbox test — matches actual sandbox flags
   echo ""
   echo "Sandbox functionality:"
   if "$BWRAP" \
@@ -53,14 +56,31 @@ run_healthcheck() {
     --dev /dev \
     --proc /proc \
     --tmpfs /tmp \
+    --tmpfs /run \
+    --tmpfs /home \
     --unshare-pid \
     --unshare-ipc \
     --unshare-uts \
+    --unshare-cgroup \
+    --cap-drop ALL \
     --die-with-parent \
+    --new-session \
+    --hostname claude-sandbox \
     -- "$TRUE" 2>/dev/null; then
-    check_pass "Basic sandbox creation works"
+    check_pass "Full sandbox creation works (with cap-drop, new-session, hostname)"
   else
-    check_fail "Basic sandbox creation failed"
+    # Fall back to basic test to provide more detail
+    if "$BWRAP" \
+      --ro-bind / / \
+      --dev /dev \
+      --proc /proc \
+      --tmpfs /tmp \
+      --die-with-parent \
+      -- "$TRUE" 2>/dev/null; then
+      check_warn "Basic sandbox works but full flags failed (cap-drop/new-session/hostname)"
+    else
+      check_fail "Basic sandbox creation failed"
+    fi
   fi
 
   # 5. Read-only enforcement
@@ -76,7 +96,16 @@ run_healthcheck() {
     check_fail "Read-only filesystem NOT enforced (writes to /etc succeeded)"
   fi
 
-  # 6. DNS + HTTPS check (use curl since getent may not be in tool PATH)
+  # 6. Seccomp profile
+  local lib_dir
+  lib_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  if [[ -f "${lib_dir}/seccomp.bpf" ]]; then
+    check_pass "Seccomp BPF profile found"
+  else
+    check_fail "Seccomp BPF profile missing (sandbox will refuse to start)"
+  fi
+
+  # 7. DNS + HTTPS check
   echo ""
   echo "Network & DNS:"
   if "$BWRAP" \
@@ -90,14 +119,14 @@ run_healthcheck() {
     check_warn "DNS/HTTPS check failed inside sandbox"
   fi
 
-  # 7. SSL certificates
+  # 8. SSL certificates
   if [[ -f "$SSL_CERT_FILE" ]]; then
     check_pass "SSL certificate bundle found"
   else
     check_fail "SSL certificate bundle missing: $SSL_CERT_FILE"
   fi
 
-  # 8. Git
+  # 9. Git
   echo ""
   echo "Tools:"
   if [[ -x "$GIT" ]]; then
@@ -106,30 +135,30 @@ run_healthcheck() {
     check_fail "git not found"
   fi
 
-  # 9. Claude binary
+  # 10. Claude binary
   if command -v claude >/dev/null 2>&1; then
     check_pass "claude binary found in PATH"
   else
     check_warn "claude binary not in current PATH (will need to be in TOOL_PATH)"
   fi
 
-  # 10. WSL2 detection
+  # 11. WSL2 detection
   echo ""
   echo "Platform:"
-  if grep -qi "microsoft" /proc/version 2>/dev/null; then
-    check_warn "WSL2 detected — Windows interop will be blocked in sandbox"
+  if "$GNUGREP" -qi "microsoft" /proc/version 2>/dev/null; then
+    check_warn "WSL2 detected — Windows drive mounts will be masked in sandbox"
     if [[ -e /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
-      check_pass "WSLInterop binfmt_misc entry found (will be masked)"
+      check_warn "WSLInterop binfmt_misc active (kernel handler persists even with masked procfs)"
     fi
   else
     check_pass "Native Linux (not WSL2)"
   fi
 
-  # 11. FUSE
+  # 12. FUSE
   if [[ -e /dev/fuse ]]; then
-    check_pass "FUSE available (overlay mode supported)"
+    check_pass "FUSE available"
   else
-    check_warn "FUSE not available (overlay mode will not work, bwrap-only mode OK)"
+    check_warn "FUSE not available"
   fi
 
   # Summary
