@@ -307,9 +307,18 @@ if [[ -f "$SECCOMP_PROFILE" ]]; then
   BWRAP_ARGS+=(--seccomp 9)
 fi
 
+# -- Detect Claude Code binary and add to PATH --
+SANDBOX_PATH="$TOOL_PATH"
+CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
+if [[ -n "$CLAUDE_BIN" ]]; then
+  CLAUDE_REAL="$("${COREUTILS}/bin/readlink" -f "$CLAUDE_BIN")"
+  CLAUDE_DIR="$("${COREUTILS}/bin/dirname" "$CLAUDE_REAL")"
+  SANDBOX_PATH="${SANDBOX_PATH}:${CLAUDE_DIR}"
+fi
+
 # -- Environment variables --
 BWRAP_ARGS+=(--setenv HOME "/home/${SANDBOX_NAME}")
-BWRAP_ARGS+=(--setenv PATH "$TOOL_PATH")
+BWRAP_ARGS+=(--setenv PATH "$SANDBOX_PATH")
 BWRAP_ARGS+=(--setenv SSL_CERT_FILE "$SSL_CERT_FILE")
 BWRAP_ARGS+=(--setenv NODE_EXTRA_CA_CERTS "$SSL_CERT_FILE")
 BWRAP_ARGS+=(--setenv TERM "${TERM:-xterm-256color}")
