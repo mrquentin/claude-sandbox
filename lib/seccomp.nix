@@ -58,8 +58,8 @@ let
     "name_to_handle_at"
 
     # Deprecated / dangerous
-    "nfsservctl"
-    "personality"  # can change syscall ABI
+    "nfsservctl"         # removed in Linux 3.1, always ENOSYS on modern kernels
+    "personality"        # can change syscall ABI
     "kcmp"
   ];
 
@@ -68,11 +68,9 @@ let
     """Generate a seccomp BPF filter in binary format for bwrap --seccomp."""
     import struct
     import sys
-    import ctypes
-    import ctypes.util
+    import platform
 
     # x86_64 syscall numbers
-    # We hardcode these for x86_64; for aarch64 support, add a mapping.
     SYSCALL_MAP_X86_64 = {
         "mount": 165,
         "umount2": 166,
@@ -143,7 +141,6 @@ let
         "kcmp": 272,
     }
 
-    import platform
     machine = platform.machine()
     if machine == "x86_64":
         AUDIT_ARCH = 0xC000003E  # AUDIT_ARCH_X86_64
@@ -162,11 +159,18 @@ let
     BPF_W   = 0x00
     BPF_ABS = 0x20
     BPF_JEQ = 0x10
+    BPF_JGE = 0x30
     BPF_K   = 0x00
 
     SECCOMP_RET_ALLOW = 0x7FFF0000
     SECCOMP_RET_ERRNO = 0x00050000
+    SECCOMP_RET_KILL_PROCESS = 0x80000000  # requires Linux >= 4.14
     EPERM = 1
+
+    # x32 ABI syscall bit — on x86_64, x32 syscalls have this bit set
+    # in the syscall number but execute the same kernel code, which can
+    # be used to bypass seccomp filters that only check native numbers.
+    X32_SYSCALL_BIT = 0x40000000
 
     def bpf_stmt(code, k):
         return struct.pack("HBBI", code, 0, 0, k)
@@ -180,32 +184,46 @@ let
         if name in syscall_map:
             blocked_nrs.append(syscall_map[name])
 
+    n_blocked = len(blocked_nrs)
+
     # Build the BPF program
     instructions = []
 
-    # Validate architecture
+    # Step 1: Validate architecture
     # offsetof(struct seccomp_data, arch) = 4
     instructions.append(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 4))
-    # If arch != expected, allow (don't break other arches)
-    n_blocked = len(blocked_nrs)
-    instructions.append(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH, 1, 0))
-    instructions.append(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW))
 
-    # Load syscall number
+    # Kill the process on architecture mismatch — allowing unknown
+    # architectures would let all their syscalls through unfiltered.
+    # JEQ: if arch matches, skip over the KILL to load syscall nr
+    instructions.append(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH, 1, 0))
+    instructions.append(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS))
+
+    # Step 2: Load syscall number
     # offsetof(struct seccomp_data, nr) = 0
     instructions.append(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, 0))
 
-    # Check each blocked syscall
+    # Step 3 (x86_64 only): Block x32 ABI syscalls
+    # x32 syscalls have bit 30 set (>= 0x40000000) but map to the same
+    # kernel handlers as native x86_64 syscalls. Without this check, an
+    # attacker could bypass the blocked list by issuing x32 variants.
+    if machine == "x86_64":
+        # JGE: if syscall nr >= X32_SYSCALL_BIT, jump to DENY
+        # After this: n_blocked JEQ checks + ALLOW + DENY
+        # DENY is n_blocked + 1 instructions forward from the next one
+        instructions.append(bpf_jump(BPF_JMP | BPF_JGE | BPF_K, X32_SYSCALL_BIT, n_blocked + 1, 0))
+
+    # Step 4: Check each blocked syscall
     for i, nr in enumerate(blocked_nrs):
         remaining = n_blocked - i - 1
-        # If match: jump to DENY (which is at offset remaining + 1 from next instruction)
+        # If match: jump to DENY (offset remaining + 1 from next instruction)
         # If no match: continue to next check (jf=0)
         instructions.append(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr, remaining + 1, 0))
 
-    # Default: ALLOW
+    # Step 5: Default ALLOW
     instructions.append(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW))
 
-    # DENY: return EPERM
+    # Step 6: DENY — return EPERM
     instructions.append(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM))
 
     # Write raw BPF program

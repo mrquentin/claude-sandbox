@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # detect.sh — Environment detection for claude-sandbox
 # Sourced by sandbox.sh; sets global variables.
+# Uses BWRAP/TRUE from caller if already set; falls back to Nix paths.
 
-BWRAP="@BWRAP@"
-TRUE="@TRUE@"
+: "${BWRAP:=@BWRAP@}"
+: "${TRUE:=@TRUE@}"
+GNUGREP="@GNUGREP@"
+COREUTILS="@COREUTILS@"
 
 detect_environment() {
   # ── WSL2 detection ──────────────────────────────────────────────
   IS_WSL2="0"
-  if [[ -f /proc/version ]] && grep -qi "microsoft" /proc/version 2>/dev/null; then
+  if [[ -f /proc/version ]] && "$GNUGREP" -qi "microsoft" /proc/version 2>/dev/null; then
     IS_WSL2="1"
   fi
 
@@ -30,10 +33,5 @@ detect_environment() {
     HAS_FUSE="1"
   fi
 
-  # ── Kernel version (for feature detection) ─────────────────────
-  KERNEL_VERSION="$(uname -r)"
-  KERNEL_MAJOR="$(echo "$KERNEL_VERSION" | cut -d. -f1)"
-  KERNEL_MINOR="$(echo "$KERNEL_VERSION" | cut -d. -f2)"
-
-  export IS_WSL2 HAS_USER_NS HAS_PID_NS HAS_FUSE KERNEL_VERSION KERNEL_MAJOR KERNEL_MINOR
+  export IS_WSL2 HAS_USER_NS HAS_PID_NS HAS_FUSE
 }

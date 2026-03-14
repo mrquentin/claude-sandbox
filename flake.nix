@@ -88,10 +88,11 @@
               cp detect.sh $out/lib/
               cp sanitize-git.sh $out/lib/
               cp healthcheck.sh $out/lib/
+              cp security-tests.sh $out/lib/
               chmod +x $out/lib/*.sh
 
-              # Install seccomp profile
-              cp ${seccompProfile}/seccomp.bpf $out/lib/seccomp.bpf 2>/dev/null || true
+              # Install seccomp profile (must succeed — sandbox refuses to start without it)
+              cp ${seccompProfile}/seccomp.bpf $out/lib/seccomp.bpf
 
               # Install main sandbox script
               cp sandbox.sh $out/bin/${name}
@@ -111,7 +112,9 @@
 
               substituteInPlace $out/lib/detect.sh \
                 --replace-fail '@BWRAP@' '${pkgs.bubblewrap}/bin/bwrap' \
-                --replace-fail '@TRUE@' '${pkgs.coreutils}/bin/true'
+                --replace-fail '@TRUE@' '${pkgs.coreutils}/bin/true' \
+                --replace-fail '@GNUGREP@' '${pkgs.gnugrep}/bin/grep' \
+                --replace-fail '@COREUTILS@' '${pkgs.coreutils}'
 
               substituteInPlace $out/lib/sanitize-git.sh \
                 --replace-fail '@GNUSED@' '${pkgs.gnused}/bin/sed' \
@@ -124,7 +127,8 @@
                 --replace-fail '@BASH@' '${pkgs.bashInteractive}/bin/bash' \
                 --replace-fail '@GIT@' '${pkgs.git}/bin/git' \
                 --replace-fail '@CURL@' '${pkgs.curl}/bin/curl' \
-                --replace-fail '@TRUE@' '${pkgs.coreutils}/bin/true'
+                --replace-fail '@TRUE@' '${pkgs.coreutils}/bin/true' \
+                --replace-fail '@GNUGREP@' '${pkgs.gnugrep}/bin/grep'
             '';
 
             meta = with pkgs.lib; {
