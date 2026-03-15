@@ -89,7 +89,9 @@
               cp sanitize-git.sh $out/lib/
               cp healthcheck.sh $out/lib/
               cp security-tests.sh $out/lib/
-              chmod +x $out/lib/*.sh
+              cp seccomp-gen.py $out/lib/
+              cp config.example.json $out/lib/
+              chmod +x $out/lib/*.sh $out/lib/seccomp-gen.py
 
               # Install seccomp profile (must succeed — sandbox refuses to start without it)
               cp ${seccompProfile}/seccomp.bpf $out/lib/seccomp.bpf
@@ -108,7 +110,9 @@
                 --replace-fail '@COREUTILS@' '${pkgs.coreutils}' \
                 --replace-fail '@GIT@' '${pkgs.git}' \
                 --replace-fail '@GNUSED@' '${pkgs.gnused}' \
-                --replace-fail '@GNUGREP@' '${pkgs.gnugrep}'
+                --replace-fail '@GNUGREP@' '${pkgs.gnugrep}' \
+                --replace-fail '@PYTHON3@' '${pkgs.python3}/bin/python3' \
+                --replace-fail '@JQ@' '${pkgs.jq}/bin/jq'
 
               substituteInPlace $out/lib/detect.sh \
                 --replace-fail '@BWRAP@' '${pkgs.bubblewrap}/bin/bwrap' \
