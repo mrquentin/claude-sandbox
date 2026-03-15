@@ -223,6 +223,7 @@ def main():
     parser = argparse.ArgumentParser(description="claude-sandbox egress filter proxy")
     parser.add_argument("--config", required=True, help="Path to egress filter config JSON")
     parser.add_argument("--port", type=int, default=0, help="Port to listen on (0 = auto)")
+    parser.add_argument("--bind", default="127.0.0.1", help="Address to bind to (default: 127.0.0.1)")
     parser.add_argument("--pidfile", help="Write PID to this file")
     parser.add_argument("--portfile", help="Write actual port to this file")
     args = parser.parse_args()
@@ -233,7 +234,7 @@ def main():
 
     EgressProxyHandler.egress_config = config
 
-    server = ThreadedProxyServer(("127.0.0.1", port), EgressProxyHandler)
+    server = ThreadedProxyServer((args.bind, port), EgressProxyHandler)
     actual_port = server.server_address[1]
 
     # Write PID file

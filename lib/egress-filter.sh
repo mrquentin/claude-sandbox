@@ -55,8 +55,16 @@ EOF
   local portfile="${SANDBOX_TMPDIR}/egress-proxy.port"
 
   # Start the proxy in the background
+  # When network isolation is active (NET_NS_ACTIVE=1), the proxy must bind
+  # to 0.0.0.0 so it's reachable from the sandbox via slirp4netns gateway.
+  local bind_addr="127.0.0.1"
+  if [[ "${NET_NS_ACTIVE:-0}" == "1" ]]; then
+    bind_addr="0.0.0.0"
+  fi
+
   "$PYTHON3" "$EGRESS_PROXY_SCRIPT" \
     --config "$egress_config" \
+    --bind "$bind_addr" \
     --port 0 \
     --pidfile "$pidfile" \
     --portfile "$portfile" \

@@ -175,6 +175,23 @@ run_healthcheck() {
     check_warn "FUSE not available"
   fi
 
+  # 14. Network namespace (for mandatory egress filtering)
+  echo ""
+  echo "Network isolation:"
+  if "$BWRAP" --unshare-net --ro-bind / / -- "$TRUE" 2>/dev/null; then
+    check_pass "Network namespace works"
+  else
+    check_warn "Network namespace not available (egress filtering will be advisory only)"
+  fi
+
+  # 15. slirp4netns (userspace networking for network namespace)
+  SLIRP4NETNS="@SLIRP4NETNS@"
+  if [[ -x "$SLIRP4NETNS" ]]; then
+    check_pass "slirp4netns found at $SLIRP4NETNS"
+  else
+    check_warn "slirp4netns not found (network isolation unavailable)"
+  fi
+
   # Summary
   echo ""
   echo "════════════════════════════════════════════"

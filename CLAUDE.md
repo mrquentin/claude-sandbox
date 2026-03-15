@@ -39,9 +39,11 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 
 8. **`lib/egress-filter.sh`** / **`lib/egress-proxy.py`** — Egress traffic filtering. `egress-filter.sh` manages proxy lifecycle (start/stop). `egress-proxy.py` is a lightweight Python HTTP/HTTPS CONNECT proxy that filters outbound connections by hostname using glob patterns. Configured via `egress_whitelist` / `egress_blacklist` in user config. Proxy env vars (`HTTP_PROXY`, `HTTPS_PROXY`) are set inside the sandbox to route traffic through the filter.
 
-9. **`lib/security-tests.sh`** — Run via `--security-test`. Executes inside the actual sandbox to verify all isolation guarantees (filesystem, credentials, namespaces, capabilities, seccomp, environment, git sanitization, command filtering, egress filtering).
+9. **`lib/network-isolation.sh`** — Network namespace isolation using slirp4netns. Creates a userspace network stack inside a `--unshare-net` namespace, providing mandatory egress enforcement. The sandbox communicates through a TAP device (10.0.2.15) with gateway at 10.0.2.2 and DNS at 10.0.2.3. Disable with `--no-network-isolation`.
 
-10. **`modules/nixos.nix`** — Declarative NixOS module for system-level integration with options for profile, extra packages, bind mounts, and SSH agent forwarding.
+10. **`lib/security-tests.sh`** — Run via `--security-test`. Executes inside the actual sandbox to verify all isolation guarantees (filesystem, credentials, namespaces, capabilities, seccomp, environment, git sanitization, command filtering, egress filtering).
+
+11. **`modules/nixos.nix`** — Declarative NixOS module for system-level integration with options for profile, extra packages, bind mounts, and SSH agent forwarding.
 
 ## Key Design Details
 
@@ -51,4 +53,5 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 - `~/.claude` is mounted read-only with tmpfs overlays for directories that need writes.
 - WSL2 gets special handling: Windows drive mounts (`/mnt/[a-z]`) are masked.
 - Egress filtering uses a host-side Python proxy with `HTTP_PROXY`/`HTTPS_PROXY` env vars inside the sandbox. Disable with `--no-egress-filter`.
+- Network isolation uses `--unshare-net` + slirp4netns for mandatory egress enforcement. Without network isolation, egress filtering is advisory only. Disable with `--no-network-isolation`.
 - All scripts are bash; seccomp generation and egress proxy use Python3.

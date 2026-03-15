@@ -57,6 +57,20 @@ let
     "open_by_handle_at"  # CVE-2015-1328
     "name_to_handle_at"
 
+    # io_uring — massive kernel attack surface, source of numerous privesc CVEs
+    # (CVE-2021-41073, CVE-2022-29582, CVE-2023-2598, CVE-2024-0582)
+    # Blocked by default in Docker and most container runtimes
+    "io_uring_setup"
+    "io_uring_enter"
+    "io_uring_register"
+
+    # Namespace manipulation — prevent nested namespace creation and escape
+    "unshare"            # create new namespaces (gain caps in nested user ns)
+    "setns"              # join existing namespaces (potential host ns re-entry)
+
+    # Seccomp self-modification — prevent exercising BPF verifier bugs
+    "seccomp"
+
     # Deprecated / dangerous
     "nfsservctl"         # removed in Linux 3.1, always ENOSYS on modern kernels
     "personality"        # can change syscall ABI
@@ -101,6 +115,12 @@ let
         "clock_adjtime": 305,
         "open_by_handle_at": 304,
         "name_to_handle_at": 303,
+        "io_uring_setup": 425,
+        "io_uring_enter": 426,
+        "io_uring_register": 427,
+        "unshare": 272,
+        "setns": 308,
+        "seccomp": 317,
         "nfsservctl": 180,
         "personality": 135,
         "kcmp": 312,
@@ -136,6 +156,12 @@ let
         "clock_adjtime": 266,
         "open_by_handle_at": 265,
         "name_to_handle_at": 264,
+        "io_uring_setup": 425,
+        "io_uring_enter": 426,
+        "io_uring_register": 427,
+        "unshare": 97,
+        "setns": 268,
+        "seccomp": 277,
         "nfsservctl": 42,
         "personality": 92,
         "kcmp": 272,
