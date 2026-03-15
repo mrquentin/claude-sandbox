@@ -667,7 +667,7 @@ PYEOF
 
     # Test that proxy is actually reachable from inside sandbox
     if sandbox_run 'command -v curl >/dev/null 2>&1'; then
-      if sandbox_run 'curl -s --max-time 5 --proxy "$HTTP_PROXY" -o /dev/null -w "%{http_code}" http://example.invalid/ 2>/dev/null || true'; then
+      if sandbox_run 'curl -s --max-time 5 --proxy "$HTTP_PROXY" -o /dev/null http://example.invalid/ >/dev/null 2>/dev/null || true'; then
         test_pass "Egress proxy is reachable from sandbox"
       else
         test_pass "Egress proxy is reachable from sandbox (connection test)"
