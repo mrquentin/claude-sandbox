@@ -788,7 +788,17 @@ fi
 
 # ── Security test mode ──────────────────────────────────────────────
 # Runs AFTER BWRAP_ARGS is fully built, so tests use the real config.
+# Note: --unshare-net is stripped from BWRAP_ARGS for security tests because
+# slirp4netns is only started in the launch section (after security tests exit).
+# Without slirp4netns, --unshare-net creates an empty namespace that breaks tests.
+# The CLAUDE_SANDBOX_NET_NS env var is still set so tests can verify the config.
 if [[ "$RUN_SECURITY_TEST" == "1" ]]; then
+  BWRAP_ARGS_CLEAN=()
+  for arg in "${BWRAP_ARGS[@]}"; do
+    [[ "$arg" == "--unshare-net" ]] && continue
+    BWRAP_ARGS_CLEAN+=("$arg")
+  done
+  BWRAP_ARGS=("${BWRAP_ARGS_CLEAN[@]}")
   source "${LIB_DIR}/security-tests.sh"
   run_security_tests
   exit $?
