@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Cancel in-progress runs for the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- Lint: fast syntax checks, no Nix needed ----------
+  lint:
+    name: Syntax checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check bash syntax
+        run: |
+          echo "::group::Checking bash scripts"
+          fail=0
+          for f in lib/*.sh; do
+            echo "  $f"
+            bash -n "$f" || fail=1
+          done
+          echo "::endgroup::"
+          exit $fail
+
+      - name: Check python syntax
+        run: |
+          echo "::group::Checking python files"
+          fail=0
+          for f in lib/*.py; do
+            echo "  $f"
+            python3 -c "import py_compile; py_compile.compile('$f', doraise=True)" || fail=1
+          done
+          echo "::endgroup::"
+          exit $fail
+
+  # ---------- Build & Test on x86_64-linux ----------
+  build-and-test:
+    name: Build & test (x86_64-linux)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          # Enables user namespaces required by bubblewrap.
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      # GitHub Actions runners disable unprivileged user namespaces by default.
+      # bubblewrap requires them for sandbox isolation.
+      - name: Enable unprivileged user namespaces
+        run: |
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build
+        run: nix build "path:." --impure --print-build-logs
+
+      - name: Run healthcheck suite
+        run: ./result/bin/claude-sandbox --test
+
+      # Security tests need a project directory to bind-mount.
+      - name: Create test project directory
+        run: |
+          mkdir -p ~/test-project
+          git -C ~/test-project init
+
+      # Network namespaces (--unshare-net) are not available on standard
+      # GitHub Actions runners, so we pass --no-network-isolation.
+      - name: Security tests (no egress filter)
+        run: |
+          ./result/bin/claude-sandbox \
+            --security-test \
+            --no-egress-filter \
+            --no-network-isolation \
+            ~/test-project
+
+      - name: Security tests (with egress filter)
+        run: |
+          ./result/bin/claude-sandbox \
+            --security-test \
+            --no-network-isolation \
+            --config /dev/stdin \
+            ~/test-project \
+            <<< '{"egress_blacklist": ["*.evil-example.com"]}'
+
+  # ---------- Build on aarch64-linux (QEMU emulation) ----------
+  build-aarch64:
+    name: Build (aarch64-linux)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+            extra-platforms = aarch64-linux
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
+
+      # QEMU user-mode emulation lets Nix cross-build for aarch64.
+      - name: Set up QEMU for aarch64
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq qemu-user-static binfmt-support
+          sudo update-binfmts --enable
+
+      - name: Build for aarch64-linux
+        run: |
+          nix build "path:." --impure --print-build-logs \
+            --system aarch64-linux
