@@ -51,6 +51,7 @@ OPTIONS:
     --list-syscalls   List available syscall names for seccomp blocking
     --yolo            Run claude with --dangerously-skip-permissions
     --security-test   Run security validation tests inside the sandbox
+    --no-egress-filter Disable egress (outbound network) filtering
     --verbose, -v     Print sandbox configuration before launch
 
 EXAMPLES:
@@ -66,6 +67,7 @@ ENVIRONMENT:
     CLAUDE_SANDBOX_EXTRA_PATH=...  Additional PATH entries inside sandbox
     CLAUDE_SANDBOX_PROFILE=NAME    Tool profile (minimal, default, full)
     CLAUDE_SANDBOX_CONFIG=FILE     Path to config file (overrides default)
+    CLAUDE_SANDBOX_NO_EGRESS_FILTER=1  Disable egress filtering
 
 CONFIG:
     Default config location: \${XDG_CONFIG_HOME:-~/.config}/claude-sandbox/config.json
@@ -75,6 +77,12 @@ CONFIG:
       "az"                   Block all invocations of az
       "az * delete"          Block "az group delete", "az vm delete", etc.
       "kubectl delete ns *"  Block "kubectl delete ns production", etc.
+
+    egress_whitelist / egress_blacklist use glob patterns on hostnames:
+      "*.anthropic.com"      Match api.anthropic.com, docs.anthropic.com
+      "api.github.com"       Exact match
+      If whitelist is non-empty, ONLY whitelisted hosts are reachable.
+      If whitelist is empty, all hosts EXCEPT blacklisted ones are reachable.
 EOF
   exit 0
 }
@@ -93,6 +101,12 @@ RUN_SECURITY_TEST=0
 CONFIG_FILE="${CLAUDE_SANDBOX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-sandbox/config.json}"
 USE_CONFIG=1
 PROFILE="${CLAUDE_SANDBOX_PROFILE:-default}"
+# Egress filtering: enabled by default, disabled by env or --no-egress-filter
+if [[ "${CLAUDE_SANDBOX_NO_EGRESS_FILTER:-0}" == "1" ]]; then
+  EGRESS_FILTER=0
+else
+  EGRESS_FILTER=1
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,6 +114,7 @@ while [[ $# -gt 0 ]]; do
     --test|test)   RUN_TEST=1; shift ;;
     --dry-run)     DRY_RUN=1; shift ;;
     --no-ssh-agent) FORWARD_SSH=0; shift ;;
+    --no-egress-filter) EGRESS_FILTER=0; shift ;;
     --extra-bind)
       if [[ $# -lt 2 ]]; then
         echo "Error: --extra-bind requires a directory argument" >&2
@@ -189,6 +204,8 @@ CFG_EXTRA_PATHS=()
 CFG_EXTRA_BLOCKED_SYSCALLS=()
 CFG_BLOCKED_COMMANDS=()
 CFG_ENV_VARS=()
+CFG_EGRESS_WHITELIST=()
+CFG_EGRESS_BLACKLIST=()
 
 if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
   if [[ "$VERBOSE" == "1" ]]; then
@@ -240,6 +257,16 @@ if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
     [[ -n "$v" ]] && CFG_ENV_VARS+=("$v")
   done < <("$JQ" -r '.env // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
 
+  # Egress whitelist patterns
+  while IFS= read -r pattern; do
+    [[ -n "$pattern" ]] && CFG_EGRESS_WHITELIST+=("$pattern")
+  done < <("$JQ" -r '.egress_whitelist // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Egress blacklist patterns
+  while IFS= read -r pattern; do
+    [[ -n "$pattern" ]] && CFG_EGRESS_BLACKLIST+=("$pattern")
+  done < <("$JQ" -r '.egress_blacklist // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
   # Extra read-only bind mounts
   while IFS= read -r dir; do
     if [[ -n "$dir" ]]; then
@@ -256,6 +283,11 @@ SANDBOX_TMPDIR="$("${COREUTILS}/bin/mktemp" -d "/tmp/${SANDBOX_NAME}.XXXXXX")"
 cleanup() {
   # Prevent re-entry from nested signals
   trap '' INT TERM HUP
+  # Stop egress filter proxy if running
+  if [[ -n "${EGRESS_PROXY_PID:-}" ]]; then
+    kill "$EGRESS_PROXY_PID" 2>/dev/null || true
+    wait "$EGRESS_PROXY_PID" 2>/dev/null || true
+  fi
   if [[ -d "$SANDBOX_TMPDIR" ]]; then
     # Scrub any credential files that may have leaked into the tmpdir
     local cred_file="${SANDBOX_TMPDIR}/home/.claude/.credentials.json"
@@ -297,6 +329,24 @@ if [[ ${#CFG_BLOCKED_COMMANDS[@]} -gt 0 ]]; then
     echo "Generated command filters for: $(printf '%s ' "${CFG_BLOCKED_COMMANDS[@]}")"
   fi
 fi
+
+# ── Setup egress filter proxy ─────────────────────────────────────
+EGRESS_PROXY_PORT=""
+EGRESS_PROXY_PID=""
+if [[ "$EGRESS_FILTER" == "1" ]] && { [[ ${#CFG_EGRESS_WHITELIST[@]} -gt 0 ]] || [[ ${#CFG_EGRESS_BLACKLIST[@]} -gt 0 ]]; }; then
+  source "${LIB_DIR}/egress-filter.sh"
+  if setup_egress_filter CFG_EGRESS_WHITELIST CFG_EGRESS_BLACKLIST; then
+    if [[ "$VERBOSE" == "1" ]]; then
+      echo "Egress filter proxy started on port $EGRESS_PROXY_PORT (PID $EGRESS_PROXY_PID)"
+      [[ ${#CFG_EGRESS_WHITELIST[@]} -gt 0 ]] && echo "  whitelist: ${CFG_EGRESS_WHITELIST[*]}"
+      [[ ${#CFG_EGRESS_BLACKLIST[@]} -gt 0 ]] && echo "  blacklist: ${CFG_EGRESS_BLACKLIST[*]}"
+    fi
+  else
+    echo "Error: Failed to start egress filter proxy" >&2
+    exit 1
+  fi
+fi
+
 
 # ── Build bwrap arguments ──────────────────────────────────────────
 BWRAP_ARGS=()
@@ -548,6 +598,17 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   BWRAP_ARGS+=(--setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY")
 fi
 
+# Egress filter proxy environment variables
+if [[ -n "$EGRESS_PROXY_PORT" ]]; then
+  BWRAP_ARGS+=(--setenv HTTP_PROXY "http://127.0.0.1:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://127.0.0.1:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv http_proxy "http://127.0.0.1:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv https_proxy "http://127.0.0.1:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv NO_PROXY "localhost,127.0.0.1")
+  BWRAP_ARGS+=(--setenv no_proxy "localhost,127.0.0.1")
+  BWRAP_ARGS+=(--setenv CLAUDE_SANDBOX_EGRESS_FILTER "1")
+fi
+
 # Forward user-configured environment variables
 for var_name in "${CFG_ENV_VARS[@]}"; do
   if [[ -n "${!var_name+x}" ]]; then
@@ -577,8 +638,17 @@ if [[ "$VERBOSE" == "1" ]]; then
     [[ ${#CFG_BLOCKED_COMMANDS[@]} -gt 0 ]] && echo "│  cmd-filter: ${CFG_BLOCKED_COMMANDS[*]}"
     [[ ${#CFG_EXTRA_BLOCKED_SYSCALLS[@]} -gt 0 ]] && echo "│  seccomp:    +${CFG_EXTRA_BLOCKED_SYSCALLS[*]}"
     [[ ${#CFG_ENV_VARS[@]} -gt 0 ]] && echo "│  env:        ${CFG_ENV_VARS[*]}"
+    [[ ${#CFG_EGRESS_WHITELIST[@]} -gt 0 ]] && echo "│  egress-wl:  ${CFG_EGRESS_WHITELIST[*]}"
+    [[ ${#CFG_EGRESS_BLACKLIST[@]} -gt 0 ]] && echo "│  egress-bl:  ${CFG_EGRESS_BLACKLIST[*]}"
   else
     echo "│ Config:      (none)"
+  fi
+  if [[ -n "$EGRESS_PROXY_PORT" ]]; then
+    echo "│ Egress filter: active on port $EGRESS_PROXY_PORT"
+  elif [[ "$EGRESS_FILTER" == "0" ]]; then
+    echo "│ Egress filter: disabled (--no-egress-filter)"
+  else
+    echo "│ Egress filter: not configured"
   fi
   echo "│ Command:     ${COMMAND[*]}"
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
