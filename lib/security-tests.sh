@@ -211,6 +211,62 @@ PYEOF
     test_skip "No .credentials.json present (no OAuth credentials to test)"
   fi
 
+  # ── Claude Config Isolation ──────────────────────────────────────
+  echo ""
+  echo "Claude config isolation:"
+
+  # ~/.claude base directory is read-only
+  if ! sandbox_run 'touch "$HOME/.claude/sandbox-write-test" 2>/dev/null'; then
+    test_pass "~/.claude is read-only (base ro-bind)"
+  else
+    sandbox_run 'rm -f "$HOME/.claude/sandbox-write-test" 2>/dev/null'
+    test_fail "~/.claude is WRITABLE — config files can be modified"
+  fi
+
+  # Writable subdirs work (Claude Code needs these at runtime)
+  local writable_ok=0
+  local writable_fail=0
+  for wdir in projects debug todos statsig cache session-env; do
+    if sandbox_run "touch \"\$HOME/.claude/${wdir}/sandbox-test\" && rm \"\$HOME/.claude/${wdir}/sandbox-test\"" 2>/dev/null; then
+      writable_ok=$((writable_ok + 1))
+    else
+      writable_fail=$((writable_fail + 1))
+    fi
+  done
+  if [[ "$writable_fail" -eq 0 ]]; then
+    test_pass "~/.claude writable subdirs functional ($writable_ok dirs)"
+  else
+    test_fail "$writable_fail writable subdirs failed ($writable_ok ok)"
+  fi
+
+  # Settings files are writable (Claude Code updates permissions etc.)
+  if [[ -f "$HOME/.claude/settings.json" ]]; then
+    if sandbox_run 'test -w "$HOME/.claude/settings.json"'; then
+      test_pass "~/.claude/settings.json is writable"
+    else
+      test_fail "~/.claude/settings.json is NOT writable"
+    fi
+  else
+    test_skip "No settings.json present"
+  fi
+
+  # Claude config content visible from host (skills, commands, hooks, CLAUDE.md)
+  if [[ -f "$HOME/.claude/CLAUDE.md" ]]; then
+    if sandbox_run 'test -f "$HOME/.claude/CLAUDE.md"'; then
+      test_pass "~/.claude/CLAUDE.md visible in sandbox"
+    else
+      test_fail "~/.claude/CLAUDE.md NOT visible — host config not mounted"
+    fi
+  elif [[ -d "$HOME/.claude/commands" ]]; then
+    if sandbox_run 'test -d "$HOME/.claude/commands"'; then
+      test_pass "~/.claude/commands/ visible in sandbox"
+    else
+      test_fail "~/.claude/commands/ NOT visible — host config not mounted"
+    fi
+  else
+    test_skip "No CLAUDE.md or commands/ on host to verify config visibility"
+  fi
+
   # ── Namespace Isolation ─────────────────────────────────────────
   echo ""
   echo "Namespace isolation:"
@@ -299,6 +355,16 @@ PYEOF
     test_pass "PATH contains Nix store paths (sandbox tool PATH)"
   else
     test_fail "PATH does not contain Nix store paths"
+  fi
+
+  # Host environment variables do not leak (only explicitly forwarded vars should be present)
+  # Test with a var that would never be forwarded intentionally
+  local leak_test_val
+  leak_test_val="$(SANDBOX_LEAK_TEST_7xk9q="leaked" sandbox_output 'echo $SANDBOX_LEAK_TEST_7xk9q' | tr -d '[:space:]')"
+  if [[ -z "$leak_test_val" ]]; then
+    test_pass "Host env vars do not leak into sandbox"
+  else
+    test_fail "Host env vars LEAK into sandbox (SANDBOX_LEAK_TEST=$leak_test_val)"
   fi
 
   # ── Seccomp Filtering ──────────────────────────────────────────

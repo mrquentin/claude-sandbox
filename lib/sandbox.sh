@@ -480,6 +480,8 @@ if [[ -n "$CLAUDE_BIN" ]]; then
 fi
 
 # -- Environment variables --
+# Clear host env to prevent leaking secrets, then set only what's needed
+BWRAP_ARGS+=(--clearenv)
 BWRAP_ARGS+=(--setenv HOME "/home/${SANDBOX_NAME}")
 BWRAP_ARGS+=(--setenv PATH "$SANDBOX_PATH")
 BWRAP_ARGS+=(--setenv SSL_CERT_FILE "$SSL_CERT_FILE")
