@@ -391,11 +391,19 @@ fi
 # userspace networking stack, making egress filtering mandatory rather
 # than advisory. Without it, processes can bypass HTTP_PROXY by making
 # direct socket connections.
+# Network isolation is only meaningful when egress filtering is configured
+# (whitelist or blacklist). Without egress rules, --unshare-net would create
+# an isolated namespace with no routing, breaking all network connectivity.
 NET_NS_ACTIVE=0
-if [[ "$NETWORK_ISOLATION" == "1" && "$HAS_NET_NS" == "1" ]]; then
+HAS_EGRESS_RULES=0
+if [[ ${#CFG_EGRESS_WHITELIST[@]} -gt 0 ]] || [[ ${#CFG_EGRESS_BLACKLIST[@]} -gt 0 ]]; then
+  HAS_EGRESS_RULES=1
+fi
+
+if [[ "$NETWORK_ISOLATION" == "1" && "$HAS_NET_NS" == "1" && "$HAS_EGRESS_RULES" == "1" ]]; then
   BWRAP_ARGS+=(--unshare-net)
   NET_NS_ACTIVE=1
-elif [[ "$NETWORK_ISOLATION" == "1" && "$HAS_NET_NS" == "0" ]]; then
+elif [[ "$NETWORK_ISOLATION" == "1" && "$HAS_NET_NS" == "0" && "$HAS_EGRESS_RULES" == "1" ]]; then
   echo "Warning: network namespace not available — egress filtering will be advisory only." >&2
   echo "  Use --no-network-isolation to suppress this warning." >&2
 fi
