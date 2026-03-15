@@ -434,10 +434,21 @@ fi
 
 # -- Filesystem: DNS resolution --
 if [[ "$NET_NS_ACTIVE" == "1" ]]; then
-  # Network isolation active: generate resolv.conf pointing to slirp4netns DNS
+  # Network isolation active: generate resolv.conf pointing to slirp4netns DNS.
+  # On NixOS, /etc/resolv.conf is a symlink (e.g. -> /etc/static/resolv.conf).
+  # bwrap cannot bind-mount over symlink destinations, so we resolve the
+  # target and bind our generated file there. We also bind over any
+  # intermediate symlink targets so the sandbox sees our DNS config.
   source "${LIB_DIR}/network-isolation.sh"
   generate_resolv_conf "${SANDBOX_TMPDIR}/resolv.conf"
-  BWRAP_ARGS+=(--ro-bind "${SANDBOX_TMPDIR}/resolv.conf" /etc/resolv.conf)
+  if [[ -L /etc/resolv.conf ]]; then
+    RESOLV_TARGET="$("${COREUTILS}/bin/readlink" -f /etc/resolv.conf 2>/dev/null)"
+    if [[ -n "$RESOLV_TARGET" && -f "$RESOLV_TARGET" ]]; then
+      BWRAP_ARGS+=(--ro-bind "${SANDBOX_TMPDIR}/resolv.conf" "$RESOLV_TARGET")
+    fi
+  else
+    BWRAP_ARGS+=(--ro-bind "${SANDBOX_TMPDIR}/resolv.conf" /etc/resolv.conf)
+  fi
 else
   # No network isolation: bind-mount host resolv.conf
   # Only bind-mount resolv.conf if it's a regular file (not a symlink).
