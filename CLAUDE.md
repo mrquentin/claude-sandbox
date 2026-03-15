@@ -11,8 +11,9 @@ claude-sandbox is an OS-level sandbox for Claude Code using bubblewrap (bwrap) o
 ```bash
 nix develop                                    # Enter dev shell with all tools
 nix build                                      # Build the sandbox package
-./result/bin/claude-sandbox --test             # Run health check suite (13 checks)
+./result/bin/claude-sandbox --test             # Run health check suite (15 checks)
 ./result/bin/claude-sandbox --security-test ~/project  # Run security validation inside sandbox
+./result/bin/claude-sandbox --security-test --no-network-isolation --config /dev/stdin ~/project <<< '{"egress_blacklist": ["*.evil.com"]}'  # With egress filter
 ./result/bin/claude-sandbox --dry-run ~/project        # Print bwrap command without executing
 ./result/bin/claude-sandbox --verbose ~/project        # Show full config before launch
 ```
@@ -27,11 +28,11 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 
 2. **`lib/sandbox.sh`** — Main entry point. Parses CLI args, loads user config (`~/.config/claude-sandbox/config.json`), calls `detect.sh` for platform detection, sets up a temporary sandbox home, runs `sanitize-git.sh`, constructs bwrap arguments (namespaces, bind mounts, seccomp FD, env vars), and executes.
 
-3. **`lib/detect.sh`** — Exports `detect_environment()` which probes for WSL2, user/PID namespace support, and FUSE availability. Results drive conditional bwrap flags in `sandbox.sh`.
+3. **`lib/detect.sh`** — Exports `detect_environment()` which probes for WSL2, user/PID/network namespace support, and FUSE availability. Results drive conditional bwrap flags in `sandbox.sh`.
 
-4. **`lib/sanitize-git.sh`** — Strips dangerous git config sections (credential helpers, aliases, includes, hooks) to prevent command execution or credential leaks inside the sandbox.
+4. **`lib/sanitize-git.sh`** — Strips dangerous git config sections (credential helpers, aliases, includes, hooks, fsmonitor) from both `~/.gitconfig` and XDG git config (`~/.config/git/config`). Uses case-insensitive, whitespace-tolerant matching. Git security is further hardened via `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL`, and `GIT_CONFIG_COUNT` overrides that neutralize malicious repo-level `.git/config` keys.
 
-5. **`lib/seccomp.nix`** / **`lib/seccomp-gen.py`** — BPF filter generators. `seccomp.nix` runs at Nix build time to produce the default filter blocking 31 syscalls. `seccomp-gen.py` supports runtime generation with user-specified extra blocked syscalls.
+5. **`lib/seccomp.nix`** / **`lib/seccomp-gen.py`** — BPF filter generators. `seccomp.nix` runs at Nix build time to produce the default filter blocking 37 syscalls (including io_uring, unshare, setns, seccomp). `seccomp-gen.py` supports runtime generation with user-specified extra blocked syscalls. Blocks x32 ABI on x86_64. Uses `SECCOMP_RET_KILL_PROCESS` for architecture mismatch.
 
 6. **`lib/healthcheck.sh`** — Run via `--test`. Validates bwrap, namespaces, filesystem isolation, DNS, SSL, git, and Claude binary presence outside the sandbox.
 
@@ -39,7 +40,7 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 
 8. **`lib/egress-filter.sh`** / **`lib/egress-proxy.py`** — Egress traffic filtering. `egress-filter.sh` manages proxy lifecycle (start/stop). `egress-proxy.py` is a lightweight Python HTTP/HTTPS CONNECT proxy that filters outbound connections by hostname using glob patterns. Configured via `egress_whitelist` / `egress_blacklist` in user config. Proxy env vars (`HTTP_PROXY`, `HTTPS_PROXY`) are set inside the sandbox to route traffic through the filter.
 
-9. **`lib/network-isolation.sh`** — Network namespace isolation using slirp4netns. Creates a userspace network stack inside a `--unshare-net` namespace, providing mandatory egress enforcement. The sandbox communicates through a TAP device (10.0.2.15) with gateway at 10.0.2.2 and DNS at 10.0.2.3. Disable with `--no-network-isolation`.
+9. **`lib/network-isolation.sh`** — Network namespace isolation using slirp4netns. Creates a userspace network stack inside a `--unshare-net` namespace, providing mandatory egress enforcement. Only activates when egress whitelist/blacklist rules are configured. The sandbox communicates through a TAP device (10.0.2.15) with gateway at 10.0.2.2 and DNS at 10.0.2.3. Disable with `--no-network-isolation`.
 
 10. **`lib/security-tests.sh`** — Run via `--security-test`. Executes inside the actual sandbox to verify all isolation guarantees (filesystem, credentials, namespaces, capabilities, seccomp, environment, git sanitization, command filtering, egress filtering).
 
@@ -53,5 +54,10 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 - `~/.claude` is mounted read-only with tmpfs overlays for directories that need writes.
 - WSL2 gets special handling: Windows drive mounts (`/mnt/[a-z]`) are masked.
 - Egress filtering uses a host-side Python proxy with `HTTP_PROXY`/`HTTPS_PROXY` env vars inside the sandbox. Disable with `--no-egress-filter`.
-- Network isolation uses `--unshare-net` + slirp4netns for mandatory egress enforcement. Without network isolation, egress filtering is advisory only. Disable with `--no-network-isolation`.
+- Network isolation uses `--unshare-net` + slirp4netns for mandatory egress enforcement. Only activates when egress whitelist/blacklist rules are configured. Without it, egress filtering is advisory only. Disable with `--no-network-isolation`.
+- Git security: `GIT_CONFIG_NOSYSTEM=1` blocks system config, `GIT_CONFIG_COUNT` overrides neutralize malicious repo-level keys (fsmonitor, hooksPath, sshCommand, filter drivers).
+- Env var forwarding has a denylist blocking `LD_PRELOAD`, `GIT_CONFIG_*`, `GIT_SSH_COMMAND`, etc.
+- Nix package names in config are validated against `^[a-zA-Z0-9._-]+$` to prevent flake injection.
+- `CLAUDE_SANDBOX_NO_SECCOMP=1` requires interactive confirmation (type 'yes') to proceed.
+- Proxy and slirp4netns have watchdogs — if either crashes, the sandbox terminates (fail-closed).
 - All scripts are bash; seccomp generation and egress proxy use Python3.
