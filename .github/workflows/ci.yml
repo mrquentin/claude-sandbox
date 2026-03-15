@@ -76,6 +76,8 @@ jobs:
         run: |
           mkdir -p ~/test-project
           git -C ~/test-project init
+          git -C ~/test-project config user.email "ci@test"
+          git -C ~/test-project config user.name "CI"
           echo "# test" > ~/test-project/README.md
           git -C ~/test-project add .
           git -C ~/test-project commit -m "init"
