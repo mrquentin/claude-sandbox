@@ -13,6 +13,8 @@ COREUTILS="@COREUTILS@"
 GIT_PKG="@GIT@"
 GNUSED="@GNUSED@"
 GNUGREP="@GNUGREP@"
+PYTHON3="@PYTHON3@"
+JQ="@JQ@"
 
 # ── Defaults ────────────────────────────────────────────────────────
 SANDBOX_NAME="claude-sandbox"
@@ -41,6 +43,9 @@ OPTIONS:
     --no-ssh-agent    Do not forward SSH_AUTH_SOCK
     --extra-bind DIR  Additional read-write bind mount (repeatable)
     --extra-ro DIR    Additional read-only bind mount (repeatable)
+    --config FILE     Path to config file (default: ~/.config/claude-sandbox/config.json)
+    --no-config       Ignore user config file
+    --list-syscalls   List available syscall names for seccomp blocking
     --yolo            Run claude with --dangerously-skip-permissions
     --security-test   Run security validation tests inside the sandbox
     --verbose, -v     Print sandbox configuration before launch
@@ -56,6 +61,11 @@ ENVIRONMENT:
     CLAUDE_SANDBOX_VERBOSE=1       Enable verbose output
     CLAUDE_SANDBOX_NO_SECCOMP=1    Allow running without seccomp (not recommended)
     CLAUDE_SANDBOX_EXTRA_PATH=...  Additional PATH entries inside sandbox
+    CLAUDE_SANDBOX_CONFIG=FILE     Path to config file (overrides default)
+
+CONFIG:
+    Default config location: \${XDG_CONFIG_HOME:-~/.config}/claude-sandbox/config.json
+    Example config: ${LIB_DIR}/config.example.json
 EOF
   exit 0
 }
@@ -71,6 +81,8 @@ VERBOSE="${CLAUDE_SANDBOX_VERBOSE:-0}"
 YOLO_MODE=0
 RUN_TEST=0
 RUN_SECURITY_TEST=0
+CONFIG_FILE="${CLAUDE_SANDBOX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-sandbox/config.json}"
+USE_CONFIG=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -90,6 +102,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       EXTRA_RO_BINDS+=("$2"); shift 2 ;;
+    --config)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --config requires a file path argument" >&2
+        exit 1
+      fi
+      CONFIG_FILE="$2"; shift 2 ;;
+    --no-config)   USE_CONFIG=0; shift ;;
+    --list-syscalls)
+      exec "$PYTHON3" "${LIB_DIR}/seccomp-gen.py" --list ;;
     --yolo)        YOLO_MODE=1; shift ;;
     --security-test) RUN_SECURITY_TEST=1; shift ;;
     --verbose|-v)  VERBOSE=1; shift ;;
@@ -146,6 +167,32 @@ fi
 
 # ── Environment detection ───────────────────────────────────────────
 detect_environment
+
+# ── Load user configuration ────────────────────────────────────────
+CFG_EXTRA_PATHS=()
+CFG_EXTRA_BLOCKED_SYSCALLS=()
+CFG_ENV_VARS=()
+
+if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
+  if [[ "$VERBOSE" == "1" ]]; then
+    echo "Loading config: $CONFIG_FILE"
+  fi
+
+  # Extra PATH entries
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && CFG_EXTRA_PATHS+=("$p")
+  done < <("$JQ" -r '.extra_path // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Extra blocked syscalls
+  while IFS= read -r s; do
+    [[ -n "$s" ]] && CFG_EXTRA_BLOCKED_SYSCALLS+=("$s")
+  done < <("$JQ" -r '.blocked_syscalls // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Environment variables to forward into the sandbox
+  while IFS= read -r v; do
+    [[ -n "$v" ]] && CFG_ENV_VARS+=("$v")
+  done < <("$JQ" -r '.env // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+fi
 
 # ── Sandbox home setup ──────────────────────────────────────────────
 SANDBOX_TMPDIR="$("${COREUTILS}/bin/mktemp" -d "/tmp/${SANDBOX_NAME}.XXXXXX")"
@@ -343,7 +390,16 @@ if [[ "$FORWARD_SSH" == "1" && -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" 
 fi
 
 # -- Seccomp profile --
-SECCOMP_PROFILE="${LIB_DIR}/seccomp.bpf"
+if [[ ${#CFG_EXTRA_BLOCKED_SYSCALLS[@]} -gt 0 ]]; then
+  # Generate custom BPF with extra blocked syscalls from user config
+  SECCOMP_PROFILE="${SANDBOX_TMPDIR}/seccomp-custom.bpf"
+  if [[ "$VERBOSE" == "1" ]]; then
+    echo "Generating custom seccomp profile (extra blocks: ${CFG_EXTRA_BLOCKED_SYSCALLS[*]})"
+  fi
+  "$PYTHON3" "${LIB_DIR}/seccomp-gen.py" "${CFG_EXTRA_BLOCKED_SYSCALLS[@]}" > "$SECCOMP_PROFILE"
+else
+  SECCOMP_PROFILE="${LIB_DIR}/seccomp.bpf"
+fi
 if [[ -f "$SECCOMP_PROFILE" ]]; then
   # bwrap --seccomp reads from an FD; we open the file on FD 9
   exec 9< "$SECCOMP_PROFILE"
@@ -364,6 +420,11 @@ SANDBOX_PATH="$TOOL_PATH"
 if [[ -n "${CLAUDE_SANDBOX_EXTRA_PATH:-}" ]]; then
   SANDBOX_PATH="${SANDBOX_PATH}:${CLAUDE_SANDBOX_EXTRA_PATH}"
 fi
+
+# Add tool paths from user config
+for p in "${CFG_EXTRA_PATHS[@]}"; do
+  SANDBOX_PATH="${SANDBOX_PATH}:${p}"
+done
 
 CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
 if [[ -n "$CLAUDE_BIN" ]]; then
@@ -392,6 +453,15 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   BWRAP_ARGS+=(--setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY")
 fi
 
+# Forward user-configured environment variables
+for var_name in "${CFG_ENV_VARS[@]}"; do
+  if [[ -n "${!var_name+x}" ]]; then
+    BWRAP_ARGS+=(--setenv "$var_name" "${!var_name}")
+  elif [[ "$VERBOSE" == "1" ]]; then
+    echo "Warning: env var '$var_name' from config is not set, skipping" >&2
+  fi
+done
+
 # -- Working directory --
 BWRAP_ARGS+=(--chdir "$PROJECT_DIR")
 
@@ -405,6 +475,14 @@ if [[ "$VERBOSE" == "1" ]]; then
   echo "│ PID NS:      $HAS_PID_NS"
   echo "│ FUSE:        $HAS_FUSE"
   echo "│ SSH agent:   $FORWARD_SSH"
+  if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
+    echo "│ Config:      $CONFIG_FILE"
+    [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  extra_path: ${CFG_EXTRA_PATHS[*]}"
+    [[ ${#CFG_EXTRA_BLOCKED_SYSCALLS[@]} -gt 0 ]] && echo "│  seccomp:    +${CFG_EXTRA_BLOCKED_SYSCALLS[*]}"
+    [[ ${#CFG_ENV_VARS[@]} -gt 0 ]] && echo "│  env:        ${CFG_ENV_VARS[*]}"
+  else
+    echo "│ Config:      (none)"
+  fi
   echo "│ Command:     ${COMMAND[*]}"
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
     echo "│ ⚠ API key:   ANTHROPIC_API_KEY is set (visible inside sandbox;"
