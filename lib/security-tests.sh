@@ -215,12 +215,16 @@ PYEOF
   echo ""
   echo "Claude config isolation:"
 
-  # ~/.claude base directory is read-only
-  if ! sandbox_run 'touch "$HOME/.claude/sandbox-write-test" 2>/dev/null'; then
-    test_pass "~/.claude is read-only (base ro-bind)"
+  # ~/.claude base directory is read-only (only when host ~/.claude exists to ro-bind)
+  if [[ -d "$HOME/.claude" ]]; then
+    if ! sandbox_run 'touch "$HOME/.claude/sandbox-write-test" 2>/dev/null'; then
+      test_pass "~/.claude is read-only (base ro-bind)"
+    else
+      sandbox_run 'rm -f "$HOME/.claude/sandbox-write-test" 2>/dev/null'
+      test_fail "~/.claude is WRITABLE — config files can be modified"
+    fi
   else
-    sandbox_run 'rm -f "$HOME/.claude/sandbox-write-test" 2>/dev/null'
-    test_fail "~/.claude is WRITABLE — config files can be modified"
+    test_skip "No ~/.claude on host (ro-bind not applicable)"
   fi
 
   # Writable subdirs work (Claude Code needs these at runtime)
