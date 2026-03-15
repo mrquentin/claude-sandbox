@@ -557,6 +557,11 @@ for dir in "${EXTRA_RO_BINDS[@]}"; do
   # Remap paths under $HOME to the sandbox user's home
   if [[ "$resolved" == "$HOME"/* ]]; then
     dest="/home/${SANDBOX_NAME}/${resolved#$HOME/}"
+    # Create parent directories in the sandbox tmpdir so bwrap can bind-mount.
+    # bwrap cannot create intermediate directories on its own.
+    local dest_parent
+    dest_parent="${SANDBOX_TMPDIR}/home/${resolved#$HOME/}"
+    "${COREUTILS}/bin/mkdir" -p "$("${COREUTILS}/bin/dirname" "$dest_parent")"
   else
     dest="$resolved"
   fi
