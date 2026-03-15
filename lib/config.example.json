@@ -9,6 +9,11 @@
 
   "extra_path": [],
 
+  "blocked_commands": [
+    "az * delete *",
+    "kubectl delete namespace *"
+  ],
+
   "blocked_syscalls": [],
 
   "env": []

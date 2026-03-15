@@ -135,14 +135,21 @@ run_healthcheck() {
     check_fail "git not found"
   fi
 
-  # 10. Claude binary
+  # 10. Command filter library
+  if [[ -f "${lib_dir}/command-filter.sh" ]]; then
+    check_pass "Command filter library found"
+  else
+    check_fail "Command filter library missing"
+  fi
+
+  # 11. Claude binary
   if command -v claude >/dev/null 2>&1; then
     check_pass "claude binary found in PATH"
   else
     check_warn "claude binary not in current PATH (will need to be in TOOL_PATH)"
   fi
 
-  # 11. WSL2 detection
+  # 12. WSL2 detection
   echo ""
   echo "Platform:"
   if "$GNUGREP" -qi "microsoft" /proc/version 2>/dev/null; then
@@ -154,7 +161,7 @@ run_healthcheck() {
     check_pass "Native Linux (not WSL2)"
   fi
 
-  # 12. FUSE
+  # 13. FUSE
   if [[ -e /dev/fuse ]]; then
     check_pass "FUSE available"
   else

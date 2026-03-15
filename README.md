@@ -15,7 +15,8 @@ Provides namespace isolation, read-only filesystem enforcement, seccomp filterin
 - **Git config sanitization** — Strips credential helpers, aliases, and include directives from .gitconfig
 - **WSL2 hardening** — Masks Windows drive mounts to block access to Windows binaries
 - **Tool profiles** — Minimal, default, and full tool sets selectable at runtime
-- **User configuration** — Per-user config for extra Nix packages, seccomp rules, and environment variables
+- **Command filtering** — Block specific command+argument patterns (e.g., `az * delete`) using glob syntax
+- **User configuration** — Per-user config for extra Nix packages, seccomp rules, blocked commands, and environment variables
 - **NixOS module** — Declarative system-level configuration
 - **Self-test** — Built-in health check and security validation tests
 
@@ -101,6 +102,10 @@ Each user can customize their sandbox without modifying the repository. Create a
     "full": ["docker"]
   },
   "extra_path": [],
+  "blocked_commands": [
+    "az * delete *",
+    "kubectl delete namespace *"
+  ],
   "blocked_syscalls": [],
   "env": ["GITHUB_TOKEN", "DATABASE_URL"]
 }
@@ -111,6 +116,7 @@ Each user can customize their sandbox without modifying the repository. Create a
 | `profile`          | Default tool profile (`minimal`, `default`, `full`)               |
 | `packages`         | Nix packages to add per profile (resolved at startup)             |
 | `extra_path`       | Additional directories to add to PATH                             |
+| `blocked_commands` | Command patterns to block inside the sandbox (shell glob syntax)  |
 | `blocked_syscalls` | Extra syscalls to block (see `--list-syscalls`)                   |
 | `env`              | Host environment variable names to forward into the sandbox       |
 
@@ -134,6 +140,32 @@ nix profile install nixpkgs#go
 ```
 
 The sandbox resolves package names via `nix build` at startup and adds them to PATH.
+
+### Blocking commands
+
+You can prevent specific commands (or command+argument combinations) from being executed inside the sandbox using `blocked_commands`. Patterns use shell glob syntax:
+
+```json
+{
+  "blocked_commands": [
+    "az",
+    "az * delete *",
+    "kubectl delete namespace *",
+    "rm -rf /",
+    "curl * --upload-file *"
+  ]
+}
+```
+
+| Pattern                      | Effect                                                  |
+|------------------------------|---------------------------------------------------------|
+| `"az"`                       | Blocks all invocations of `az`                          |
+| `"az * delete *"`            | Blocks `az group delete mygroup`, `az vm delete myvm`   |
+| `"kubectl delete namespace *"` | Blocks `kubectl delete namespace production`          |
+| `"rm -rf /"`                 | Blocks `rm -rf /`                                       |
+| `"curl * --upload-file *"`   | Blocks curl with `--upload-file` anywhere in args       |
+
+Blocked commands exit with code 126 and print a `[claude-sandbox] BLOCKED` message. The filter directory is mounted **read-only** inside the sandbox so filter rules cannot be tampered with.
 
 ## Tool Profiles
 
@@ -174,6 +206,7 @@ Tests verify:
 - **Seccomp enforcement** — `mount()`, `ptrace()`, `chroot()`, `personality()` blocked
 - **WSL2 drive masking** — Windows drives inaccessible (WSL2 only)
 - **Git config sanitization** — dangerous sections stripped
+- **Command filtering** — filter directory read-only, patterns enforced, wrappers tamper-proof
 
 ## NixOS Module
 
@@ -214,6 +247,7 @@ Add to your `flake.nix`:
 | Environment        | Host env cleared (`--clearenv`); only explicit vars forwarded |
 | Credentials        | `.credentials.json` read-only bind; SSH/AWS/kube dirs masked  |
 | Claude config      | `~/.claude` read-only; skills/agents/hooks visible but not writable |
+| Command filtering  | Configurable command+argument blocking via read-only wrappers |
 | Git config         | Credential helpers, aliases, includes, filter drivers stripped|
 | WSL2               | Windows drives masked; binary access blocked                  |
 | SSH agent          | Forwarded by default (use `--no-ssh-agent` to disable)        |
@@ -270,6 +304,7 @@ claude-sandbox
 │   ├── sanitize-git.sh    # Git config sanitizer
 │   ├── healthcheck.sh     # Health check suite
 │   ├── security-tests.sh  # Security validation tests
+│   ├── command-filter.sh  # Command filter wrapper generator
 │   ├── seccomp.nix        # Seccomp BPF filter generator (build-time)
 │   ├── seccomp-gen.py     # Seccomp BPF generator (runtime, for custom configs)
 │   └── config.example.json # Example user configuration

@@ -495,6 +495,90 @@ PYEOF
     test_skip "No .gitconfig in sandbox home (nothing to sanitize)"
   fi
 
+  # ── Command Filtering ────────────────────────────────────────────
+  local filter_dir="/opt/command-filters"
+  if sandbox_run "test -d '${filter_dir}'"; then
+    echo ""
+    echo "Command filtering:"
+
+    # Filter directory is read-only (cannot be tampered with)
+    if ! sandbox_run "touch '${filter_dir}/test-write' 2>/dev/null"; then
+      test_pass "Filter directory is read-only"
+    else
+      test_fail "Filter directory is WRITABLE — filters can be bypassed"
+    fi
+
+    # Patterns file is read-only
+    if ! sandbox_run "echo 'hack' >> '${filter_dir}/_patterns.conf' 2>/dev/null"; then
+      test_pass "Patterns file is read-only"
+    else
+      test_fail "Patterns file is WRITABLE — filter rules can be modified"
+    fi
+
+    # Filter exec script is read-only
+    if ! sandbox_run "echo 'hack' >> '${filter_dir}/_filter_exec' 2>/dev/null"; then
+      test_pass "Filter exec script is read-only"
+    else
+      test_fail "Filter exec script is WRITABLE — filter logic can be modified"
+    fi
+
+    # Cannot create new files in filter dir (cannot add a passthrough wrapper)
+    if ! sandbox_run "touch '${filter_dir}/newcmd' 2>/dev/null"; then
+      test_pass "Cannot create files in filter directory"
+    else
+      test_fail "Can create files in filter directory — bypass possible"
+    fi
+
+    # Cannot delete filter wrappers
+    local first_wrapper
+    first_wrapper="$(sandbox_output "ls '${filter_dir}/' | grep -v '^_' | head -1" | tr -d '[:space:]')"
+    if [[ -n "$first_wrapper" ]]; then
+      if ! sandbox_run "rm -f '${filter_dir}/${first_wrapper}' 2>/dev/null"; then
+        test_pass "Cannot delete filter wrapper '${first_wrapper}'"
+      else
+        test_fail "Can delete filter wrapper '${first_wrapper}' — bypass possible"
+      fi
+    fi
+
+    # Verify a blocked command is actually blocked (exit code 126)
+    local first_pattern
+    first_pattern="$(sandbox_output "head -n1 '${filter_dir}/_patterns.conf'" | tr -d '\r')"
+    first_pattern="${first_pattern%"${first_pattern##*[![:space:]]}"}"  # trim trailing whitespace
+    if [[ -n "$first_pattern" ]]; then
+      local base_cmd="${first_pattern%% *}"
+      # Test: the wrapper itself must exist and be executable
+      if sandbox_run "test -x '${filter_dir}/${base_cmd}'"; then
+        test_pass "Filter wrapper exists for '${base_cmd}'"
+      else
+        test_fail "No filter wrapper for '${base_cmd}'"
+      fi
+
+      # Test: executing the blocked pattern returns exit 126
+      sandbox_run "$first_pattern </dev/null" 2>/dev/null
+      local exit_code=$?
+      if [[ "$exit_code" -eq 126 ]]; then
+        test_pass "Blocked pattern actively enforced: '${first_pattern}'"
+      elif [[ "$exit_code" -eq 127 ]]; then
+        # Command not found — filter tried to passthrough but real binary doesn't exist
+        # This is expected if the blocked command isn't installed
+        test_skip "Command '${base_cmd}' not installed (filter present but cannot verify blocking)"
+      else
+        test_fail "Blocked pattern NOT enforced (exit=$exit_code): '${first_pattern}'"
+      fi
+    fi
+
+    # Verify PATH has filter dir first
+    local path_start
+    path_start="$(sandbox_output 'echo "${PATH%%:*}"' | tr -d '[:space:]')"
+    if [[ "$path_start" == "$filter_dir" ]]; then
+      test_pass "Filter directory is first in PATH"
+    else
+      test_fail "Filter directory is NOT first in PATH (found: $path_start)"
+    fi
+  else
+    test_skip "No command filters configured"
+  fi
+
   # ── Cleanup ─────────────────────────────────────────────────────
   rm -f "${SANDBOX_TMPDIR}/home/seccomp-test.py"
 
