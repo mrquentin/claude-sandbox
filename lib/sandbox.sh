@@ -239,6 +239,15 @@ if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
   while IFS= read -r v; do
     [[ -n "$v" ]] && CFG_ENV_VARS+=("$v")
   done < <("$JQ" -r '.env // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Extra read-only bind mounts
+  while IFS= read -r dir; do
+    if [[ -n "$dir" ]]; then
+      # Expand ~ to $HOME since tilde doesn't expand in JSON strings
+      dir="${dir/#\~/$HOME}"
+      EXTRA_RO_BINDS+=("$dir")
+    fi
+  done < <("$JQ" -r '.extra_ro_binds // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
 fi
 
 # ── Sandbox home setup ──────────────────────────────────────────────
@@ -436,7 +445,13 @@ for dir in "${EXTRA_RO_BINDS[@]}"; do
     echo "Error: --extra-ro directory does not exist: $dir" >&2
     exit 1
   fi
-  BWRAP_ARGS+=(--ro-bind "$resolved" "$resolved")
+  # Remap paths under $HOME to the sandbox user's home
+  if [[ "$resolved" == "$HOME"/* ]]; then
+    dest="/home/${SANDBOX_NAME}/${resolved#$HOME/}"
+  else
+    dest="$resolved"
+  fi
+  BWRAP_ARGS+=(--ro-bind "$resolved" "$dest")
 done
 
 # -- Command filter directory (READ-ONLY) --
