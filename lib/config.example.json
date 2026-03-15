@@ -1,27 +1,17 @@
 {
-  "// docs": "claude-sandbox user configuration — copy to ~/.config/claude-sandbox/config.json",
+  "extra_path": [
+    "/run/current-system/sw/bin"
+  ],
 
-  "tools": {
-    "// paths_doc": "Extra directories to add to PATH inside the sandbox",
-    "paths": [
-      "/opt/custom-tool/bin"
-    ],
+  "blocked_syscalls": [
+    "io_uring_setup",
+    "io_uring_enter",
+    "io_uring_register"
+  ],
 
-    "// ro_binds_doc": "Extra directories to bind-mount read-only (for tool dependencies)",
-    "ro_binds": [
-      "/opt/custom-tool"
-    ],
-
-    "// rw_binds_doc": "Extra directories to bind-mount read-write",
-    "rw_binds": []
-  },
-
-  "seccomp": {
-    "// block_doc": "Additional syscalls to block (added to the default list). Run 'claude-sandbox --list-syscalls' to see available names.",
-    "block": [
-      "io_uring_setup",
-      "io_uring_enter",
-      "io_uring_register"
-    ]
-  }
+  "env": [
+    "MY_API_KEY",
+    "DATABASE_URL",
+    "GITHUB_TOKEN"
+  ]
 }

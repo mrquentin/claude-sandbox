@@ -170,34 +170,28 @@ detect_environment
 
 # ── Load user configuration ────────────────────────────────────────
 CFG_EXTRA_PATHS=()
-CFG_RO_BINDS=()
-CFG_RW_BINDS=()
 CFG_EXTRA_BLOCKED_SYSCALLS=()
+CFG_ENV_VARS=()
 
 if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
   if [[ "$VERBOSE" == "1" ]]; then
     echo "Loading config: $CONFIG_FILE"
   fi
 
-  # Tools: extra PATH entries
+  # Extra PATH entries
   while IFS= read -r p; do
     [[ -n "$p" ]] && CFG_EXTRA_PATHS+=("$p")
-  done < <("$JQ" -r '.tools.paths // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+  done < <("$JQ" -r '.extra_path // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
 
-  # Tools: extra read-only bind mounts
-  while IFS= read -r p; do
-    [[ -n "$p" ]] && CFG_RO_BINDS+=("$p")
-  done < <("$JQ" -r '.tools.ro_binds // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
-
-  # Tools: extra read-write bind mounts
-  while IFS= read -r p; do
-    [[ -n "$p" ]] && CFG_RW_BINDS+=("$p")
-  done < <("$JQ" -r '.tools.rw_binds // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
-
-  # Seccomp: extra blocked syscalls
+  # Extra blocked syscalls
   while IFS= read -r s; do
     [[ -n "$s" ]] && CFG_EXTRA_BLOCKED_SYSCALLS+=("$s")
-  done < <("$JQ" -r '.seccomp.block // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+  done < <("$JQ" -r '.blocked_syscalls // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Environment variables to forward into the sandbox
+  while IFS= read -r v; do
+    [[ -n "$v" ]] && CFG_ENV_VARS+=("$v")
+  done < <("$JQ" -r '.env // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
 fi
 
 # ── Sandbox home setup ──────────────────────────────────────────────
@@ -387,24 +381,6 @@ for dir in "${EXTRA_RO_BINDS[@]}"; do
   BWRAP_ARGS+=(--ro-bind "$resolved" "$resolved")
 done
 
-# -- Extra bind mounts from config --
-for dir in "${CFG_RO_BINDS[@]}"; do
-  if [[ -d "$dir" ]]; then
-    resolved="$("${COREUTILS}/bin/readlink" -f "$dir")"
-    BWRAP_ARGS+=(--ro-bind "$resolved" "$resolved")
-  elif [[ "$VERBOSE" == "1" ]]; then
-    echo "Warning: config ro_bind directory not found, skipping: $dir" >&2
-  fi
-done
-for dir in "${CFG_RW_BINDS[@]}"; do
-  if [[ -d "$dir" ]]; then
-    resolved="$("${COREUTILS}/bin/readlink" -f "$dir")"
-    BWRAP_ARGS+=(--bind "$resolved" "$resolved")
-  elif [[ "$VERBOSE" == "1" ]]; then
-    echo "Warning: config rw_bind directory not found, skipping: $dir" >&2
-  fi
-done
-
 # -- SSH agent forwarding --
 # Note: the socket is bind-mounted read-only to prevent file-level writes,
 # but the Unix socket itself remains fully functional for SSH agent operations.
@@ -477,6 +453,15 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   BWRAP_ARGS+=(--setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY")
 fi
 
+# Forward user-configured environment variables
+for var_name in "${CFG_ENV_VARS[@]}"; do
+  if [[ -n "${!var_name+x}" ]]; then
+    BWRAP_ARGS+=(--setenv "$var_name" "${!var_name}")
+  elif [[ "$VERBOSE" == "1" ]]; then
+    echo "Warning: env var '$var_name' from config is not set, skipping" >&2
+  fi
+done
+
 # -- Working directory --
 BWRAP_ARGS+=(--chdir "$PROJECT_DIR")
 
@@ -492,10 +477,9 @@ if [[ "$VERBOSE" == "1" ]]; then
   echo "│ SSH agent:   $FORWARD_SSH"
   if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
     echo "│ Config:      $CONFIG_FILE"
-    [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  paths:      ${CFG_EXTRA_PATHS[*]}"
-    [[ ${#CFG_RO_BINDS[@]} -gt 0 ]] && echo "│  ro_binds:   ${CFG_RO_BINDS[*]}"
-    [[ ${#CFG_RW_BINDS[@]} -gt 0 ]] && echo "│  rw_binds:   ${CFG_RW_BINDS[*]}"
+    [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  extra_path: ${CFG_EXTRA_PATHS[*]}"
     [[ ${#CFG_EXTRA_BLOCKED_SYSCALLS[@]} -gt 0 ]] && echo "│  seccomp:    +${CFG_EXTRA_BLOCKED_SYSCALLS[*]}"
+    [[ ${#CFG_ENV_VARS[@]} -gt 0 ]] && echo "│  env:        ${CFG_ENV_VARS[*]}"
   else
     echo "│ Config:      (none)"
   fi
