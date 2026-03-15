@@ -559,7 +559,6 @@ for dir in "${EXTRA_RO_BINDS[@]}"; do
     dest="/home/${SANDBOX_NAME}/${resolved#$HOME/}"
     # Use bwrap's --dir to create parent directories inside the sandbox.
     # bwrap cannot create intermediate directories for bind mounts on its own.
-    local dest_dir
     dest_dir="$("${COREUTILS}/bin/dirname" "$dest")"
     if [[ "$dest_dir" != "/home/${SANDBOX_NAME}" ]]; then
       BWRAP_ARGS+=(--dir "$dest_dir")
