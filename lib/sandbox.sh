@@ -70,6 +70,11 @@ ENVIRONMENT:
 CONFIG:
     Default config location: \${XDG_CONFIG_HOME:-~/.config}/claude-sandbox/config.json
     Example config: ${LIB_DIR}/config.example.json
+
+    blocked_commands patterns use shell glob syntax:
+      "az"                   Block all invocations of az
+      "az * delete"          Block "az group delete", "az vm delete", etc.
+      "kubectl delete ns *"  Block "kubectl delete ns production", etc.
 EOF
   exit 0
 }
@@ -182,6 +187,7 @@ detect_environment
 # ── Load user configuration ────────────────────────────────────────
 CFG_EXTRA_PATHS=()
 CFG_EXTRA_BLOCKED_SYSCALLS=()
+CFG_BLOCKED_COMMANDS=()
 CFG_ENV_VARS=()
 
 if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
@@ -223,6 +229,11 @@ if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
   while IFS= read -r s; do
     [[ -n "$s" ]] && CFG_EXTRA_BLOCKED_SYSCALLS+=("$s")
   done < <("$JQ" -r '.blocked_syscalls // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Blocked command patterns
+  while IFS= read -r cmd; do
+    [[ -n "$cmd" ]] && CFG_BLOCKED_COMMANDS+=("$cmd")
+  done < <("$JQ" -r '.blocked_commands // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
 
   # Environment variables to forward into the sandbox
   while IFS= read -r v; do
@@ -266,6 +277,17 @@ done
 # Sanitize gitconfig
 source "${LIB_DIR}/sanitize-git.sh"
 sanitize_gitconfig "$HOME" "${SANDBOX_TMPDIR}/home"
+
+# ── Generate command filters ──────────────────────────────────────
+FILTER_HOST_DIR=""
+if [[ ${#CFG_BLOCKED_COMMANDS[@]} -gt 0 ]]; then
+  source "${LIB_DIR}/command-filter.sh"
+  FILTER_HOST_DIR="${SANDBOX_TMPDIR}/filters"
+  generate_command_filters "$FILTER_HOST_DIR" "${CFG_BLOCKED_COMMANDS[@]}"
+  if [[ "$VERBOSE" == "1" ]]; then
+    echo "Generated command filters for: $(printf '%s ' "${CFG_BLOCKED_COMMANDS[@]}")"
+  fi
+fi
 
 # ── Build bwrap arguments ──────────────────────────────────────────
 BWRAP_ARGS=()
@@ -417,6 +439,11 @@ for dir in "${EXTRA_RO_BINDS[@]}"; do
   BWRAP_ARGS+=(--ro-bind "$resolved" "$resolved")
 done
 
+# -- Command filter directory (READ-ONLY) --
+if [[ -n "$FILTER_HOST_DIR" && -d "$FILTER_HOST_DIR" ]]; then
+  BWRAP_ARGS+=(--ro-bind "$FILTER_HOST_DIR" "$SANDBOX_FILTER_DIR")
+fi
+
 # -- SSH agent forwarding --
 # Note: the socket is bind-mounted read-only to prevent file-level writes,
 # but the Unix socket itself remains fully functional for SSH agent operations.
@@ -461,6 +488,11 @@ case "$PROFILE" in
     ;;
 esac
 SANDBOX_PATH="$TOOL_PATH"
+
+# Prepend command filter directory (must be first in PATH to intercept commands)
+if [[ -n "$FILTER_HOST_DIR" && -d "$FILTER_HOST_DIR" ]]; then
+  SANDBOX_PATH="${SANDBOX_FILTER_DIR}:${SANDBOX_PATH}"
+fi
 
 # Add extra packages from NixOS module or CLAUDE_SANDBOX_EXTRA_PATH env
 if [[ -n "${CLAUDE_SANDBOX_EXTRA_PATH:-}" ]]; then
@@ -527,6 +559,7 @@ if [[ "$VERBOSE" == "1" ]]; then
   if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
     echo "│ Config:      $CONFIG_FILE"
     [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  paths:      ${CFG_EXTRA_PATHS[*]}"
+    [[ ${#CFG_BLOCKED_COMMANDS[@]} -gt 0 ]] && echo "│  cmd-filter: ${CFG_BLOCKED_COMMANDS[*]}"
     [[ ${#CFG_EXTRA_BLOCKED_SYSCALLS[@]} -gt 0 ]] && echo "│  seccomp:    +${CFG_EXTRA_BLOCKED_SYSCALLS[*]}"
     [[ ${#CFG_ENV_VARS[@]} -gt 0 ]] && echo "│  env:        ${CFG_ENV_VARS[*]}"
   else

@@ -90,6 +90,7 @@
             cp sanitize-git.sh $out/lib/
             cp healthcheck.sh $out/lib/
             cp security-tests.sh $out/lib/
+            cp command-filter.sh $out/lib/
             cp seccomp-gen.py $out/lib/
             cp config.example.json $out/lib/
             chmod +x $out/lib/*.sh $out/lib/seccomp-gen.py
