@@ -326,7 +326,7 @@ fi
 
 # -- Filesystem: writable Claude subdirs (overlay tmpfs on top of ro-bind) --
 # Claude Code needs to write to these directories at runtime
-for writable_dir in projects debug todos statsig shell-snapshots file-history cache backups plugins; do
+for writable_dir in projects debug todos statsig shell-snapshots file-history cache backups plugins session-env; do
   BWRAP_ARGS+=(--tmpfs "/home/${SANDBOX_NAME}/.claude/${writable_dir}")
 done
 
