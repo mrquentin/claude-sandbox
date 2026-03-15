@@ -1,17 +1,15 @@
 {
-  "extra_path": [
-    "/run/current-system/sw/bin"
-  ],
+  "profile": "default",
 
-  "blocked_syscalls": [
-    "io_uring_setup",
-    "io_uring_enter",
-    "io_uring_register"
-  ],
+  "packages": {
+    "minimal": [],
+    "default": ["go", "htop"],
+    "full": ["docker"]
+  },
 
-  "env": [
-    "MY_API_KEY",
-    "DATABASE_URL",
-    "GITHUB_TOKEN"
-  ]
+  "extra_path": [],
+
+  "blocked_syscalls": [],
+
+  "env": []
 }

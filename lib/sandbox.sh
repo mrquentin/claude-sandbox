@@ -5,7 +5,9 @@ set -euo pipefail
 
 # ── Paths injected by Nix at build time ─────────────────────────────
 BWRAP="@BWRAP@"
-TOOL_PATH="@TOOL_PATH@"
+TOOL_PATH_MINIMAL="@TOOL_PATH_MINIMAL@"
+TOOL_PATH_DEFAULT="@TOOL_PATH_DEFAULT@"
+TOOL_PATH_FULL="@TOOL_PATH_FULL@"
 SSL_CERT_FILE="@SSL_CERT_FILE@"
 SANDBOX_BASH="@BASH@"
 LIB_DIR="@LIB_DIR@"
@@ -43,6 +45,7 @@ OPTIONS:
     --no-ssh-agent    Do not forward SSH_AUTH_SOCK
     --extra-bind DIR  Additional read-write bind mount (repeatable)
     --extra-ro DIR    Additional read-only bind mount (repeatable)
+    --profile NAME    Tool profile: minimal, default, full (default: default)
     --config FILE     Path to config file (default: ~/.config/claude-sandbox/config.json)
     --no-config       Ignore user config file
     --list-syscalls   List available syscall names for seccomp blocking
@@ -61,6 +64,7 @@ ENVIRONMENT:
     CLAUDE_SANDBOX_VERBOSE=1       Enable verbose output
     CLAUDE_SANDBOX_NO_SECCOMP=1    Allow running without seccomp (not recommended)
     CLAUDE_SANDBOX_EXTRA_PATH=...  Additional PATH entries inside sandbox
+    CLAUDE_SANDBOX_PROFILE=NAME    Tool profile (minimal, default, full)
     CLAUDE_SANDBOX_CONFIG=FILE     Path to config file (overrides default)
 
 CONFIG:
@@ -83,6 +87,7 @@ RUN_TEST=0
 RUN_SECURITY_TEST=0
 CONFIG_FILE="${CLAUDE_SANDBOX_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-sandbox/config.json}"
 USE_CONFIG=1
+PROFILE="${CLAUDE_SANDBOX_PROFILE:-default}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,6 +107,12 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       EXTRA_RO_BINDS+=("$2"); shift 2 ;;
+    --profile)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --profile requires a name (minimal, default, full)" >&2
+        exit 1
+      fi
+      PROFILE="$2"; shift 2 ;;
     --config)
       if [[ $# -lt 2 ]]; then
         echo "Error: --config requires a file path argument" >&2
@@ -178,7 +189,32 @@ if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
     echo "Loading config: $CONFIG_FILE"
   fi
 
-  # Extra PATH entries
+  # Profile override from config (CLI --profile takes precedence)
+  if [[ "$PROFILE" == "default" && "${CLAUDE_SANDBOX_PROFILE:-}" == "" ]]; then
+    cfg_profile="$("$JQ" -r '.profile // empty' "$CONFIG_FILE" 2>/dev/null)"
+    if [[ -n "$cfg_profile" ]]; then
+      PROFILE="$cfg_profile"
+    fi
+  fi
+
+  # Nix packages — resolve to store paths and add to PATH
+  while IFS= read -r pkg; do
+    if [[ -n "$pkg" ]]; then
+      store_path="$(nix build --no-link --print-out-paths "nixpkgs#${pkg}" 2>/dev/null)" || true
+      if [[ -n "$store_path" && -d "${store_path}/bin" ]]; then
+        CFG_EXTRA_PATHS+=("${store_path}/bin")
+      elif [[ -n "$store_path" ]]; then
+        # Some packages (e.g. go) put binaries in non-standard locations
+        while IFS= read -r bin_dir; do
+          CFG_EXTRA_PATHS+=("$bin_dir")
+        done < <(find "$store_path" -name bin -type d 2>/dev/null)
+      else
+        echo "Warning: could not resolve nix package '${pkg}', skipping" >&2
+      fi
+    fi
+  done < <("$JQ" -r --arg p "$PROFILE" '.packages[$p] // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
+
+  # Extra PATH entries (manual paths)
   while IFS= read -r p; do
     [[ -n "$p" ]] && CFG_EXTRA_PATHS+=("$p")
   done < <("$JQ" -r '.extra_path // [] | .[]' "$CONFIG_FILE" 2>/dev/null)
@@ -414,6 +450,16 @@ else
 fi
 
 # -- Detect Claude Code binary and add to PATH --
+# Select tool profile
+case "$PROFILE" in
+  minimal) TOOL_PATH="$TOOL_PATH_MINIMAL" ;;
+  default) TOOL_PATH="$TOOL_PATH_DEFAULT" ;;
+  full)    TOOL_PATH="$TOOL_PATH_FULL" ;;
+  *)
+    echo "Error: unknown profile '$PROFILE' (use: minimal, default, full)" >&2
+    exit 1
+    ;;
+esac
 SANDBOX_PATH="$TOOL_PATH"
 
 # Add extra packages from NixOS module or CLAUDE_SANDBOX_EXTRA_PATH env
@@ -468,6 +514,7 @@ BWRAP_ARGS+=(--chdir "$PROJECT_DIR")
 # ── Verbose output ──────────────────────────────────────────────────
 if [[ "$VERBOSE" == "1" ]]; then
   echo "╭─── claude-sandbox v${VERSION} ───────────────────────────"
+  echo "│ Profile:     $PROFILE"
   echo "│ Project:     $PROJECT_DIR"
   echo "│ Sandbox home: ${SANDBOX_TMPDIR}/home"
   echo "│ WSL2:        $IS_WSL2"
@@ -477,7 +524,7 @@ if [[ "$VERBOSE" == "1" ]]; then
   echo "│ SSH agent:   $FORWARD_SSH"
   if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
     echo "│ Config:      $CONFIG_FILE"
-    [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  extra_path: ${CFG_EXTRA_PATHS[*]}"
+    [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  paths:      ${CFG_EXTRA_PATHS[*]}"
     [[ ${#CFG_EXTRA_BLOCKED_SYSCALLS[@]} -gt 0 ]] && echo "│  seccomp:    +${CFG_EXTRA_BLOCKED_SYSCALLS[*]}"
     [[ ${#CFG_ENV_VARS[@]} -gt 0 ]] && echo "│  env:        ${CFG_ENV_VARS[*]}"
   else
