@@ -107,6 +107,9 @@ Each user can customize their sandbox without modifying the repository. Create a
     "kubectl delete namespace *"
   ],
   "blocked_syscalls": [],
+  "extra_ro_binds": [
+    "~/.config/gh"
+  ],
   "env": ["GITHUB_TOKEN", "DATABASE_URL"]
 }
 ```
@@ -118,6 +121,7 @@ Each user can customize their sandbox without modifying the repository. Create a
 | `extra_path`       | Additional directories to add to PATH                             |
 | `blocked_commands` | Command patterns to block inside the sandbox (shell glob syntax)  |
 | `blocked_syscalls` | Extra syscalls to block (see `--list-syscalls`)                   |
+| `extra_ro_binds`   | Host directories to mount read-only inside the sandbox (`~` supported) |
 | `env`              | Host environment variable names to forward into the sandbox       |
 
 The `--profile` flag and `CLAUDE_SANDBOX_PROFILE` env var override the config file profile.

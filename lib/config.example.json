@@ -16,5 +16,9 @@
 
   "blocked_syscalls": [],
 
+  "extra_ro_binds": [
+    "~/.config/gh"
+  ],
+
   "env": []
 }
