@@ -63,6 +63,8 @@ jobs:
 
       - name: Enable Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
 
       # GitHub Actions runners disable unprivileged user namespaces by default.
       # bubblewrap requires them for sandbox isolation.
@@ -121,6 +123,8 @@ jobs:
 
       - name: Enable Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@v8
+        with:
+          use-flakehub: false
 
       # QEMU user-mode emulation lets Nix cross-build for aarch64.
       - name: Set up QEMU for aarch64
