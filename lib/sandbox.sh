@@ -17,6 +17,7 @@ GNUSED="@GNUSED@"
 GNUGREP="@GNUGREP@"
 PYTHON3="@PYTHON3@"
 JQ="@JQ@"
+SLIRP4NETNS="@SLIRP4NETNS@"
 
 # ── Defaults ────────────────────────────────────────────────────────
 SANDBOX_NAME="claude-sandbox"
@@ -52,6 +53,7 @@ OPTIONS:
     --yolo            Run claude with --dangerously-skip-permissions
     --security-test   Run security validation tests inside the sandbox
     --no-egress-filter Disable egress (outbound network) filtering
+    --no-network-isolation  Disable network namespace isolation (fallback to advisory proxy)
     --verbose, -v     Print sandbox configuration before launch
 
 EXAMPLES:
@@ -68,6 +70,7 @@ ENVIRONMENT:
     CLAUDE_SANDBOX_PROFILE=NAME    Tool profile (minimal, default, full)
     CLAUDE_SANDBOX_CONFIG=FILE     Path to config file (overrides default)
     CLAUDE_SANDBOX_NO_EGRESS_FILTER=1  Disable egress filtering
+    CLAUDE_SANDBOX_NO_NET_NS=1        Disable network namespace isolation
 
 CONFIG:
     Default config location: \${XDG_CONFIG_HOME:-~/.config}/claude-sandbox/config.json
@@ -107,6 +110,12 @@ if [[ "${CLAUDE_SANDBOX_NO_EGRESS_FILTER:-0}" == "1" ]]; then
 else
   EGRESS_FILTER=1
 fi
+# Network isolation: enabled by default, disabled by env or --no-network-isolation
+if [[ "${CLAUDE_SANDBOX_NO_NET_NS:-0}" == "1" ]]; then
+  NETWORK_ISOLATION=0
+else
+  NETWORK_ISOLATION=1
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -115,6 +124,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)     DRY_RUN=1; shift ;;
     --no-ssh-agent) FORWARD_SSH=0; shift ;;
     --no-egress-filter) EGRESS_FILTER=0; shift ;;
+    --no-network-isolation) NETWORK_ISOLATION=0; shift ;;
     --extra-bind)
       if [[ $# -lt 2 ]]; then
         echo "Error: --extra-bind requires a directory argument" >&2
@@ -223,6 +233,11 @@ if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
   # Nix packages — resolve to store paths and add to PATH
   while IFS= read -r pkg; do
     if [[ -n "$pkg" ]]; then
+      # Validate package name to prevent flake reference injection (e.g. ../../evil-flake#drv)
+      if [[ ! "$pkg" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        echo "Error: invalid package name '${pkg}' in config (must match [a-zA-Z0-9._-]+)" >&2
+        continue
+      fi
       store_path="$(nix build --no-link --print-out-paths "nixpkgs#${pkg}" 2>/dev/null)" || true
       if [[ -n "$store_path" && -d "${store_path}/bin" ]]; then
         CFG_EXTRA_PATHS+=("${store_path}/bin")
@@ -315,7 +330,7 @@ for settings_file in settings.json settings.local.json keybindings.json; do
   fi
 done
 
-# Sanitize gitconfig
+# Sanitize gitconfig (global + XDG)
 source "${LIB_DIR}/sanitize-git.sh"
 sanitize_gitconfig "$HOME" "${SANDBOX_TMPDIR}/home"
 
@@ -327,6 +342,8 @@ if [[ ${#CFG_BLOCKED_COMMANDS[@]} -gt 0 ]]; then
   generate_command_filters "$FILTER_HOST_DIR" "${CFG_BLOCKED_COMMANDS[@]}"
   if [[ "$VERBOSE" == "1" ]]; then
     echo "Generated command filters for: $(printf '%s ' "${CFG_BLOCKED_COMMANDS[@]}")"
+    echo "  Note: Command filters are PATH-based (advisory). Bypasses exist via absolute"
+    echo "  paths, interpreters (python/node), or shell builtins."
   fi
 fi
 
@@ -340,6 +357,10 @@ if [[ "$EGRESS_FILTER" == "1" ]] && { [[ ${#CFG_EGRESS_WHITELIST[@]} -gt 0 ]] ||
       echo "Egress filter proxy started on port $EGRESS_PROXY_PORT (PID $EGRESS_PROXY_PID)"
       [[ ${#CFG_EGRESS_WHITELIST[@]} -gt 0 ]] && echo "  whitelist: ${CFG_EGRESS_WHITELIST[*]}"
       [[ ${#CFG_EGRESS_BLACKLIST[@]} -gt 0 ]] && echo "  blacklist: ${CFG_EGRESS_BLACKLIST[*]}"
+      if [[ "$NET_NS_ACTIVE" != "1" ]]; then
+        echo "  WARNING: Egress filtering is ADVISORY — processes that bypass HTTP_PROXY"
+        echo "           (raw sockets, direct connections, DNS) are NOT filtered."
+      fi
     fi
   else
     echo "Error: Failed to start egress filter proxy" >&2
@@ -364,8 +385,20 @@ if [[ "$HAS_USER_NS" == "1" ]]; then
   BWRAP_ARGS+=(--uid 1000 --gid 1000)
 fi
 
-# Keep network (Claude needs API access)
-# Network filtering is a Phase 2 feature
+# ── Network isolation ──
+# Determine if we can and should use network namespace isolation.
+# With --unshare-net + slirp4netns, all traffic is forced through the
+# userspace networking stack, making egress filtering mandatory rather
+# than advisory. Without it, processes can bypass HTTP_PROXY by making
+# direct socket connections.
+NET_NS_ACTIVE=0
+if [[ "$NETWORK_ISOLATION" == "1" && "$HAS_NET_NS" == "1" ]]; then
+  BWRAP_ARGS+=(--unshare-net)
+  NET_NS_ACTIVE=1
+elif [[ "$NETWORK_ISOLATION" == "1" && "$HAS_NET_NS" == "0" ]]; then
+  echo "Warning: network namespace not available — egress filtering will be advisory only." >&2
+  echo "  Use --no-network-isolation to suppress this warning." >&2
+fi
 
 # -- Lifecycle --
 BWRAP_ARGS+=(--die-with-parent)
@@ -400,18 +433,26 @@ if [[ -e /run/nscd ]]; then
 fi
 
 # -- Filesystem: DNS resolution --
-# Only bind-mount resolv.conf if it's a regular file (not a symlink).
-# On NixOS/WSL2, /etc/resolv.conf is a symlink to /mnt/wsl/resolv.conf,
-# which already works through the base --ro-bind / / mount.
-# bwrap cannot bind-mount over symlink destinations.
-if [[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]]; then
-  BWRAP_ARGS+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
-elif [[ -L /etc/resolv.conf ]]; then
-  # Symlink — resolve and bind the target so DNS works even if
-  # intermediate paths get masked
-  RESOLV_TARGET="$("${COREUTILS}/bin/readlink" -f /etc/resolv.conf 2>/dev/null)"
-  if [[ -n "$RESOLV_TARGET" && -f "$RESOLV_TARGET" ]]; then
-    BWRAP_ARGS+=(--ro-bind "$RESOLV_TARGET" "$RESOLV_TARGET")
+if [[ "$NET_NS_ACTIVE" == "1" ]]; then
+  # Network isolation active: generate resolv.conf pointing to slirp4netns DNS
+  source "${LIB_DIR}/network-isolation.sh"
+  generate_resolv_conf "${SANDBOX_TMPDIR}/resolv.conf"
+  BWRAP_ARGS+=(--ro-bind "${SANDBOX_TMPDIR}/resolv.conf" /etc/resolv.conf)
+else
+  # No network isolation: bind-mount host resolv.conf
+  # Only bind-mount resolv.conf if it's a regular file (not a symlink).
+  # On NixOS/WSL2, /etc/resolv.conf is a symlink to /mnt/wsl/resolv.conf,
+  # which already works through the base --ro-bind / / mount.
+  # bwrap cannot bind-mount over symlink destinations.
+  if [[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]]; then
+    BWRAP_ARGS+=(--ro-bind /etc/resolv.conf /etc/resolv.conf)
+  elif [[ -L /etc/resolv.conf ]]; then
+    # Symlink — resolve and bind the target so DNS works even if
+    # intermediate paths get masked
+    RESOLV_TARGET="$("${COREUTILS}/bin/readlink" -f /etc/resolv.conf 2>/dev/null)"
+    if [[ -n "$RESOLV_TARGET" && -f "$RESOLV_TARGET" ]]; then
+      BWRAP_ARGS+=(--ro-bind "$RESOLV_TARGET" "$RESOLV_TARGET")
+    fi
   fi
 fi
 
@@ -454,6 +495,13 @@ for settings_file in settings.json settings.local.json keybindings.json; do
     BWRAP_ARGS+=(--bind "${SANDBOX_TMPDIR}/home/.claude/${settings_file}" "/home/${SANDBOX_NAME}/.claude/${settings_file}")
   fi
 done
+
+# -- Filesystem: sanitized XDG git config --
+# If the user has an XDG git config, mount the sanitized copy
+if [[ -d "${SANDBOX_TMPDIR}/home/.config/git" ]]; then
+  "${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.config"
+  BWRAP_ARGS+=(--bind "${SANDBOX_TMPDIR}/home/.config/git" "/home/${SANDBOX_NAME}/.config/git")
+fi
 
 # -- Filesystem: mask sensitive host directories --
 BWRAP_ARGS+=(--tmpfs "/home/${SANDBOX_NAME}/.ssh")
@@ -538,6 +586,34 @@ else
   if [[ "${CLAUDE_SANDBOX_NO_SECCOMP:-0}" != "1" ]]; then
     echo "  Set CLAUDE_SANDBOX_NO_SECCOMP=1 to run without seccomp (not recommended)." >&2
     exit 1
+  else
+    echo "" >&2
+    echo "╔══════════════════════════════════════════════════════════════════╗" >&2
+    echo "║  ⚠ WARNING: SECCOMP FILTERING IS DISABLED                      ║" >&2
+    echo "║                                                                 ║" >&2
+    echo "║  CLAUDE_SANDBOX_NO_SECCOMP=1 is set. The sandbox will run      ║" >&2
+    echo "║  WITHOUT syscall filtering. This significantly reduces sandbox   ║" >&2
+    echo "║  security: dangerous syscalls (ptrace, mount, io_uring, etc.)   ║" >&2
+    echo "║  will be unrestricted inside the sandbox.                       ║" >&2
+    echo "║                                                                 ║" >&2
+    echo "║  Only use this for debugging or compatibility testing.          ║" >&2
+    echo "╚══════════════════════════════════════════════════════════════════╝" >&2
+    echo "" >&2
+    # Interactive confirmation — require the user to explicitly accept the risk
+    if [[ -t 0 ]]; then
+      echo -n "Type 'yes' to proceed without seccomp protection: " >&2
+      read -r confirm
+      if [[ "$confirm" != "yes" ]]; then
+        echo "Aborted." >&2
+        exit 1
+      fi
+    else
+      echo "Error: non-interactive shell — cannot confirm seccomp bypass." >&2
+      echo "  For non-interactive use, set CLAUDE_SANDBOX_NO_SECCOMP_ACCEPT=1" >&2
+      if [[ "${CLAUDE_SANDBOX_NO_SECCOMP_ACCEPT:-0}" != "1" ]]; then
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -587,6 +663,30 @@ BWRAP_ARGS+=(--setenv TERM "${TERM:-xterm-256color}")
 BWRAP_ARGS+=(--setenv LANG "${LANG:-en_US.UTF-8}")
 BWRAP_ARGS+=(--setenv SANDBOX "1")
 BWRAP_ARGS+=(--setenv CLAUDE_SANDBOX_VERSION "$VERSION")
+if [[ "$NET_NS_ACTIVE" == "1" ]]; then
+  BWRAP_ARGS+=(--setenv CLAUDE_SANDBOX_NET_NS "1")
+fi
+
+# -- Git security hardening --
+# Prevent /etc/gitconfig from being loaded (H9: system git config not sanitized)
+BWRAP_ARGS+=(--setenv GIT_CONFIG_NOSYSTEM "1")
+# Point global config to the sanitized copy
+BWRAP_ARGS+=(--setenv GIT_CONFIG_GLOBAL "/home/${SANDBOX_NAME}/.gitconfig")
+# Override dangerous repo-level .git/config keys using GIT_CONFIG_COUNT (highest precedence).
+# This neutralizes malicious repos that set fsmonitor, hooks, filters, etc. (H1)
+BWRAP_ARGS+=(--setenv GIT_CONFIG_COUNT "6")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_KEY_0 "core.fsmonitor")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_VALUE_0 "false")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_KEY_1 "core.hooksPath")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_VALUE_1 "/dev/null")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_KEY_2 "core.sshCommand")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_VALUE_2 "false")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_KEY_3 "filter.lfs.clean")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_VALUE_3 "true")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_KEY_4 "filter.lfs.smudge")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_VALUE_4 "true")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_KEY_5 "filter.lfs.process")
+BWRAP_ARGS+=(--setenv GIT_CONFIG_VALUE_5 "true")
 
 # Forward SSH_AUTH_SOCK if allowed
 if [[ "$FORWARD_SSH" == "1" && -n "${SSH_AUTH_SOCK:-}" && -S "${SSH_AUTH_SOCK}" ]]; then
@@ -596,21 +696,41 @@ fi
 # Forward ANTHROPIC_API_KEY if set (alternative to OAuth)
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   BWRAP_ARGS+=(--setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY")
+  # H2: Warn when API key is exposed without egress filtering
+  if [[ -z "$EGRESS_PROXY_PORT" && "$EGRESS_FILTER" == "0" ]]; then
+    echo "Warning: ANTHROPIC_API_KEY is forwarded into the sandbox WITHOUT egress filtering." >&2
+    echo "  The network is unrestricted — the key could be exfiltrated by malicious code." >&2
+    echo "  Consider enabling egress filtering (egress_whitelist in config.json)." >&2
+  fi
 fi
 
 # Egress filter proxy environment variables
 if [[ -n "$EGRESS_PROXY_PORT" ]]; then
-  BWRAP_ARGS+=(--setenv HTTP_PROXY "http://127.0.0.1:${EGRESS_PROXY_PORT}")
-  BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://127.0.0.1:${EGRESS_PROXY_PORT}")
-  BWRAP_ARGS+=(--setenv http_proxy "http://127.0.0.1:${EGRESS_PROXY_PORT}")
-  BWRAP_ARGS+=(--setenv https_proxy "http://127.0.0.1:${EGRESS_PROXY_PORT}")
+  # When network isolation is active, the proxy is on the host side.
+  # The sandbox reaches it via slirp4netns gateway (10.0.2.2).
+  # Without network isolation, the sandbox shares the host network stack.
+  if [[ "$NET_NS_ACTIVE" == "1" ]]; then
+    PROXY_ADDR="${SLIRP_GATEWAY}"
+  else
+    PROXY_ADDR="127.0.0.1"
+  fi
+  BWRAP_ARGS+=(--setenv HTTP_PROXY "http://${PROXY_ADDR}:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://${PROXY_ADDR}:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv http_proxy "http://${PROXY_ADDR}:${EGRESS_PROXY_PORT}")
+  BWRAP_ARGS+=(--setenv https_proxy "http://${PROXY_ADDR}:${EGRESS_PROXY_PORT}")
   BWRAP_ARGS+=(--setenv NO_PROXY "localhost,127.0.0.1")
   BWRAP_ARGS+=(--setenv no_proxy "localhost,127.0.0.1")
   BWRAP_ARGS+=(--setenv CLAUDE_SANDBOX_EGRESS_FILTER "1")
 fi
 
 # Forward user-configured environment variables
+# Denylist: env vars that could undermine sandbox isolation (H10)
+BLOCKED_ENV_PATTERN="^(LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|BASH_FUNC_.*|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_.*|GIT_CONFIG_VALUE_.*|GIT_DIR|GIT_WORK_TREE|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|GIT_PROXY_COMMAND)$"
 for var_name in "${CFG_ENV_VARS[@]}"; do
+  if [[ "$var_name" =~ $BLOCKED_ENV_PATTERN ]]; then
+    echo "Warning: refusing to forward blocked env var '$var_name' (security risk)" >&2
+    continue
+  fi
   if [[ -n "${!var_name+x}" ]]; then
     BWRAP_ARGS+=(--setenv "$var_name" "${!var_name}")
   elif [[ "$VERBOSE" == "1" ]]; then
@@ -632,6 +752,7 @@ if [[ "$VERBOSE" == "1" ]]; then
   echo "│ PID NS:      $HAS_PID_NS"
   echo "│ FUSE:        $HAS_FUSE"
   echo "│ SSH agent:   $FORWARD_SSH"
+  echo "│ Network NS:  $NET_NS_ACTIVE"
   if [[ "$USE_CONFIG" == "1" && -f "$CONFIG_FILE" ]]; then
     echo "│ Config:      $CONFIG_FILE"
     [[ ${#CFG_EXTRA_PATHS[@]} -gt 0 ]] && echo "│  paths:      ${CFG_EXTRA_PATHS[*]}"
@@ -644,7 +765,11 @@ if [[ "$VERBOSE" == "1" ]]; then
     echo "│ Config:      (none)"
   fi
   if [[ -n "$EGRESS_PROXY_PORT" ]]; then
-    echo "│ Egress filter: active on port $EGRESS_PROXY_PORT"
+    if [[ "$NET_NS_ACTIVE" == "1" ]]; then
+      echo "│ Egress filter: active on port $EGRESS_PROXY_PORT (MANDATORY — network isolated)"
+    else
+      echo "│ Egress filter: active on port $EGRESS_PROXY_PORT (ADVISORY — no network isolation)"
+    fi
   elif [[ "$EGRESS_FILTER" == "0" ]]; then
     echo "│ Egress filter: disabled (--no-egress-filter)"
   else
@@ -676,5 +801,73 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# ── Background process watchdog (H5: fail-closed on crash) ──────
+# Monitor critical background processes (egress proxy, slirp4netns).
+# If any die unexpectedly, terminate the sandbox.
+_start_watchdog() {
+  local name="$1" pid="$2"
+  (
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep 2
+    done
+    echo "Error: $name (PID $pid) died unexpectedly — terminating sandbox" >&2
+    kill -TERM $$ 2>/dev/null || true
+  ) &
+  WATCHDOG_PIDS+=($!)
+}
+
+WATCHDOG_PIDS=()
+
+if [[ -n "${EGRESS_PROXY_PID:-}" ]]; then
+  _start_watchdog "egress filter proxy" "$EGRESS_PROXY_PID"
+fi
+
 # ── Launch ──────────────────────────────────────────────────────────
-exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "${COMMAND[@]}"
+if [[ "$NET_NS_ACTIVE" == "1" ]]; then
+  # Network isolation: launch bwrap with --info-fd to get child PID,
+  # then start slirp4netns to provide userspace networking.
+  INFO_PIPE="${SANDBOX_TMPDIR}/bwrap-info"
+  "${COREUTILS}/bin/mkfifo" "$INFO_PIPE"
+
+  "$BWRAP" "${BWRAP_ARGS[@]}" --info-fd 3 -- "${COMMAND[@]}" 3>"$INFO_PIPE" &
+  BWRAP_PID=$!
+
+  # Read the child PID from bwrap's info JSON
+  BWRAP_CHILD_PID=""
+  if read -r info_json < "$INFO_PIPE" 2>/dev/null; then
+    BWRAP_CHILD_PID="$(echo "$info_json" | "$JQ" -r '.["child-pid"] // empty' 2>/dev/null)"
+  fi
+  rm -f "$INFO_PIPE"
+
+  if [[ -z "$BWRAP_CHILD_PID" ]]; then
+    echo "Error: could not get bwrap child PID for network isolation" >&2
+    kill "$BWRAP_PID" 2>/dev/null || true
+    exit 1
+  fi
+
+  # Source network isolation if not already sourced (may have been sourced for resolv.conf)
+  if [[ -z "${SLIRP_READY:-}" ]]; then
+    source "${LIB_DIR}/network-isolation.sh"
+  fi
+
+  if setup_network_isolation "$BWRAP_CHILD_PID"; then
+    _start_watchdog "slirp4netns" "$SLIRP4NETNS_PID"
+  else
+    echo "Error: failed to start network isolation — terminating sandbox" >&2
+    kill "$BWRAP_PID" 2>/dev/null || true
+    exit 1
+  fi
+
+  # Update cleanup trap to include all watchdogs + slirp4netns
+  trap 'for p in "${WATCHDOG_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; stop_network_isolation; cleanup' EXIT INT TERM HUP
+
+  # Wait for bwrap to finish
+  wait "$BWRAP_PID" 2>/dev/null
+  exit $?
+else
+  # No network isolation: simple exec
+  if [[ ${#WATCHDOG_PIDS[@]} -gt 0 ]]; then
+    trap 'for p in "${WATCHDOG_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done; cleanup' EXIT INT TERM HUP
+  fi
+  exec "$BWRAP" "${BWRAP_ARGS[@]}" -- "${COMMAND[@]}"
+fi

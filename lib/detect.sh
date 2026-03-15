@@ -27,11 +27,17 @@ detect_environment() {
     HAS_PID_NS="1"
   fi
 
+  # ── Network namespace support ─────────────────────────────────
+  HAS_NET_NS="0"
+  if "$BWRAP" --unshare-net --ro-bind / / -- "$TRUE" 2>/dev/null; then
+    HAS_NET_NS="1"
+  fi
+
   # ── FUSE support ───────────────────────────────────────────────
   HAS_FUSE="0"
   if [[ -e /dev/fuse ]]; then
     HAS_FUSE="1"
   fi
 
-  export IS_WSL2 HAS_USER_NS HAS_PID_NS HAS_FUSE
+  export IS_WSL2 HAS_USER_NS HAS_PID_NS HAS_NET_NS HAS_FUSE
 }

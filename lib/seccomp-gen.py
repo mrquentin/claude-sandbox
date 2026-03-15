@@ -52,6 +52,16 @@ DEFAULT_BLOCKED = [
     # Container escape vectors
     "open_by_handle_at",
     "name_to_handle_at",
+    # io_uring — massive kernel attack surface, numerous privesc CVEs
+    # (CVE-2021-41073, CVE-2022-29582, CVE-2023-2598, CVE-2024-0582)
+    "io_uring_setup",
+    "io_uring_enter",
+    "io_uring_register",
+    # Namespace manipulation — prevent nested namespace creation/escape
+    "unshare",
+    "setns",
+    # Seccomp self-modification — prevent BPF verifier exploitation
+    "seccomp",
     # Deprecated / dangerous
     "nfsservctl",
     "personality",

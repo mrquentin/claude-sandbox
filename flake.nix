@@ -80,7 +80,7 @@
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
 
-          buildInputs = [ pkgs.bubblewrap ];
+          buildInputs = [ pkgs.bubblewrap pkgs.slirp4netns ];
 
           installPhase = ''
             mkdir -p $out/bin $out/lib
@@ -93,6 +93,7 @@
             cp command-filter.sh $out/lib/
             cp egress-filter.sh $out/lib/
             cp egress-proxy.py $out/lib/
+            cp network-isolation.sh $out/lib/
             cp seccomp-gen.py $out/lib/
             cp config.example.json $out/lib/
             chmod +x $out/lib/*.sh $out/lib/seccomp-gen.py $out/lib/egress-proxy.py
@@ -118,7 +119,8 @@
               --replace-fail '@GNUSED@' '${pkgs.gnused}' \
               --replace-fail '@GNUGREP@' '${pkgs.gnugrep}' \
               --replace-fail '@PYTHON3@' '${pkgs.python3}/bin/python3' \
-              --replace-fail '@JQ@' '${pkgs.jq}/bin/jq'
+              --replace-fail '@JQ@' '${pkgs.jq}/bin/jq' \
+              --replace-fail '@SLIRP4NETNS@' '${pkgs.slirp4netns}/bin/slirp4netns'
 
             substituteInPlace $out/lib/detect.sh \
               --replace-fail '@BWRAP@' '${pkgs.bubblewrap}/bin/bwrap' \
@@ -141,7 +143,8 @@
               --replace-fail '@GIT@' '${pkgs.git}/bin/git' \
               --replace-fail '@CURL@' '${pkgs.curl}/bin/curl' \
               --replace-fail '@TRUE@' '${pkgs.coreutils}/bin/true' \
-              --replace-fail '@GNUGREP@' '${pkgs.gnugrep}/bin/grep'
+              --replace-fail '@GNUGREP@' '${pkgs.gnugrep}/bin/grep' \
+              --replace-fail '@SLIRP4NETNS@' '${pkgs.slirp4netns}/bin/slirp4netns'
           '';
 
           meta = with pkgs.lib; {
@@ -162,6 +165,7 @@
         devShells.default = pkgs.mkShell {
           buildInputs = defaultTools ++ [
             pkgs.bubblewrap
+            pkgs.slirp4netns
             sandbox
           ];
           shellHook = ''
