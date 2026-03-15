@@ -142,6 +142,13 @@ run_healthcheck() {
     check_fail "Command filter library missing"
   fi
 
+  # 10b. Egress filter library
+  if [[ -f "${lib_dir}/egress-filter.sh" && -f "${lib_dir}/egress-proxy.py" ]]; then
+    check_pass "Egress filter library and proxy found"
+  else
+    check_fail "Egress filter library or proxy missing"
+  fi
+
   # 11. Claude binary
   if command -v claude >/dev/null 2>&1; then
     check_pass "claude binary found in PATH"

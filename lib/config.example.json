@@ -16,6 +16,11 @@
 
   "blocked_syscalls": [],
 
+  "egress_whitelist": [],
+  "egress_blacklist": [
+    "*.evil-example.com"
+  ],
+
   "extra_ro_binds": [
     "~/.config/gh"
   ],

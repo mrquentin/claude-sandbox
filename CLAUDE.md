@@ -37,9 +37,11 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 
 7. **`lib/command-filter.sh`** — Generates PATH-based command filter wrappers. For each blocked command pattern (e.g., `"az * delete"`), creates a symlink to a shared `_filter_exec` script that uses bash glob matching to block or pass through. The filter directory is bind-mounted read-only at `/opt/command-filters` inside the sandbox.
 
-8. **`lib/security-tests.sh`** — Run via `--security-test`. Executes inside the actual sandbox to verify all isolation guarantees (filesystem, credentials, namespaces, capabilities, seccomp, environment, git sanitization, command filtering).
+8. **`lib/egress-filter.sh`** / **`lib/egress-proxy.py`** — Egress traffic filtering. `egress-filter.sh` manages proxy lifecycle (start/stop). `egress-proxy.py` is a lightweight Python HTTP/HTTPS CONNECT proxy that filters outbound connections by hostname using glob patterns. Configured via `egress_whitelist` / `egress_blacklist` in user config. Proxy env vars (`HTTP_PROXY`, `HTTPS_PROXY`) are set inside the sandbox to route traffic through the filter.
 
-9. **`modules/nixos.nix`** — Declarative NixOS module for system-level integration with options for profile, extra packages, bind mounts, and SSH agent forwarding.
+9. **`lib/security-tests.sh`** — Run via `--security-test`. Executes inside the actual sandbox to verify all isolation guarantees (filesystem, credentials, namespaces, capabilities, seccomp, environment, git sanitization, command filtering, egress filtering).
+
+10. **`modules/nixos.nix`** — Declarative NixOS module for system-level integration with options for profile, extra packages, bind mounts, and SSH agent forwarding.
 
 ## Key Design Details
 
@@ -48,4 +50,5 @@ The sandbox works by constructing a bubblewrap command with layered isolation:
 - Sandbox home is a temp dir (`/tmp/claude-sandbox.XXXXXX`) that gets credential-scrubbed on exit (dd from urandom).
 - `~/.claude` is mounted read-only with tmpfs overlays for directories that need writes.
 - WSL2 gets special handling: Windows drive mounts (`/mnt/[a-z]`) are masked.
-- All scripts are bash; seccomp generation uses Python3.
+- Egress filtering uses a host-side Python proxy with `HTTP_PROXY`/`HTTPS_PROXY` env vars inside the sandbox. Disable with `--no-egress-filter`.
+- All scripts are bash; seccomp generation and egress proxy use Python3.

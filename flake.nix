@@ -91,9 +91,11 @@
             cp healthcheck.sh $out/lib/
             cp security-tests.sh $out/lib/
             cp command-filter.sh $out/lib/
+            cp egress-filter.sh $out/lib/
+            cp egress-proxy.py $out/lib/
             cp seccomp-gen.py $out/lib/
             cp config.example.json $out/lib/
-            chmod +x $out/lib/*.sh $out/lib/seccomp-gen.py
+            chmod +x $out/lib/*.sh $out/lib/seccomp-gen.py $out/lib/egress-proxy.py
 
             # Install seccomp profile (must succeed — sandbox refuses to start without it)
             cp ${seccompProfile}/seccomp.bpf $out/lib/seccomp.bpf
@@ -123,6 +125,9 @@
               --replace-fail '@TRUE@' '${pkgs.coreutils}/bin/true' \
               --replace-fail '@GNUGREP@' '${pkgs.gnugrep}/bin/grep' \
               --replace-fail '@COREUTILS@' '${pkgs.coreutils}'
+
+            substituteInPlace $out/lib/egress-filter.sh \
+              --replace-fail '@EGRESS_PROXY@' "$out/lib/egress-proxy.py"
 
             substituteInPlace $out/lib/sanitize-git.sh \
               --replace-fail '@GNUSED@' '${pkgs.gnused}/bin/sed' \
