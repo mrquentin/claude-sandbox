@@ -498,6 +498,11 @@ BWRAP_ARGS+=(--bind "$PROJECT_DIR" "$PROJECT_DIR")
 # -- Filesystem: Claude config (READ-ONLY base from host) --
 # Mount the entire ~/.claude so skills, agents, hooks, CLAUDE.md, MCP config etc. are available
 if [[ -d "$HOME/.claude" ]]; then
+  # Ensure writable subdirs exist on the host before the ro-bind so bwrap has a
+  # mount point for the tmpfs overlays below (bwrap cannot mkdir inside a ro-bind).
+  for writable_dir in projects debug todos statsig shell-snapshots file-history cache backups plugins session-env; do
+    "${COREUTILS}/bin/mkdir" -p "$HOME/.claude/${writable_dir}"
+  done
   BWRAP_ARGS+=(--ro-bind "$HOME/.claude" "/home/${SANDBOX_NAME}/.claude")
 fi
 
