@@ -340,6 +340,10 @@ if [[ ${#CFG_BLOCKED_COMMANDS[@]} -gt 0 ]]; then
   source "${LIB_DIR}/command-filter.sh"
   FILTER_HOST_DIR="${SANDBOX_TMPDIR}/filters"
   generate_command_filters "$FILTER_HOST_DIR" "${CFG_BLOCKED_COMMANDS[@]}"
+  # Pre-create the mount point inside the sandbox home tmpdir so the
+  # --ro-bind below has a destination to attach to (same pattern as
+  # the .claude writable-subdir overlays).
+  "${COREUTILS}/bin/mkdir" -p "${SANDBOX_TMPDIR}/home/.command-filters"
   if [[ "$VERBOSE" == "1" ]]; then
     echo "Generated command filters for: $(printf '%s ' "${CFG_BLOCKED_COMMANDS[@]}")"
     echo "  Note: Command filters are PATH-based (advisory). Bypasses exist via absolute"
@@ -582,10 +586,10 @@ done
 
 # -- Command filter directory (READ-ONLY) --
 if [[ -n "$FILTER_HOST_DIR" && -d "$FILTER_HOST_DIR" ]]; then
-  # SANDBOX_FILTER_DIR is under /tmp, which is already a writable tmpfs
-  # from --tmpfs /tmp above, so --dir can create the subdirectory without
-  # any /opt mount-point gymnastics.
-  BWRAP_ARGS+=(--dir "$SANDBOX_FILTER_DIR")
+  # The mount point was pre-created at ${SANDBOX_TMPDIR}/home/.command-filters
+  # and is visible inside the sandbox via the --bind of SANDBOX_TMPDIR/home.
+  # Overlay it read-only with the generated filter scripts so Claude cannot
+  # tamper with them.  No --dir gymnastics needed.
   BWRAP_ARGS+=(--ro-bind "$FILTER_HOST_DIR" "$SANDBOX_FILTER_DIR")
 fi
 
