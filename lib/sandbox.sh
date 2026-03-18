@@ -582,6 +582,10 @@ done
 
 # -- Command filter directory (READ-ONLY) --
 if [[ -n "$FILTER_HOST_DIR" && -d "$FILTER_HOST_DIR" ]]; then
+  # Create the mount point directory inside the sandbox namespace first.
+  # /opt may not exist on the host (e.g. NixOS), and bwrap cannot mkdir
+  # inside the read-only base bind mount, so --dir ensures the path exists.
+  BWRAP_ARGS+=(--dir "$SANDBOX_FILTER_DIR")
   BWRAP_ARGS+=(--ro-bind "$FILTER_HOST_DIR" "$SANDBOX_FILTER_DIR")
 fi
 
