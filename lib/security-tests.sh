@@ -500,7 +500,7 @@ PYEOF
   fi
 
   # ── Command Filtering ────────────────────────────────────────────
-  local filter_dir="/opt/command-filters"
+  local filter_dir="/tmp/command-filters"
   if sandbox_run "test -d '${filter_dir}'"; then
     echo ""
     echo "Command filtering:"

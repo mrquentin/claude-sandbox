@@ -582,16 +582,9 @@ done
 
 # -- Command filter directory (READ-ONLY) --
 if [[ -n "$FILTER_HOST_DIR" && -d "$FILTER_HOST_DIR" ]]; then
-  # Two cases for /opt, both caused by --ro-bind / / making the root read-only:
-  #  - /opt exists on host: --dir cannot mkdir inside the read-only bind;
-  #    use --tmpfs /opt to shadow it with a writable tmpfs.
-  #  - /opt absent on host: --tmpfs /opt fails (no mount point);
-  #    use --dir /opt to create the directory in the sandbox namespace.
-  if [[ -d /opt ]]; then
-    BWRAP_ARGS+=(--tmpfs /opt)
-  else
-    BWRAP_ARGS+=(--dir /opt)
-  fi
+  # SANDBOX_FILTER_DIR is under /tmp, which is already a writable tmpfs
+  # from --tmpfs /tmp above, so --dir can create the subdirectory without
+  # any /opt mount-point gymnastics.
   BWRAP_ARGS+=(--dir "$SANDBOX_FILTER_DIR")
   BWRAP_ARGS+=(--ro-bind "$FILTER_HOST_DIR" "$SANDBOX_FILTER_DIR")
 fi

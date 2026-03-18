@@ -5,7 +5,7 @@
 # Requires: COREUTILS, SANDBOX_BASH — provided by sandbox.sh before sourcing.
 
 # Path where the filter directory is mounted inside the sandbox (read-only)
-SANDBOX_FILTER_DIR="/opt/command-filters"
+SANDBOX_FILTER_DIR="/tmp/command-filters"
 
 # generate_command_filters FILTER_DIR PATTERNS...
 #
