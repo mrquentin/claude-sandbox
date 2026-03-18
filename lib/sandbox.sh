@@ -582,9 +582,11 @@ done
 
 # -- Command filter directory (READ-ONLY) --
 if [[ -n "$FILTER_HOST_DIR" && -d "$FILTER_HOST_DIR" ]]; then
-  # Create the mount point directory inside the sandbox namespace first.
-  # /opt may not exist on the host (e.g. NixOS), and bwrap cannot mkdir
-  # inside the read-only base bind mount, so --dir ensures the path exists.
+  # --ro-bind / / makes /opt read-only even if it exists on the host.
+  # --dir cannot mkdir inside a read-only bind, so mount a fresh tmpfs
+  # at /opt first to give bwrap a writable parent, then create the
+  # subdirectory and bind the filter scripts on top.
+  BWRAP_ARGS+=(--tmpfs /opt)
   BWRAP_ARGS+=(--dir "$SANDBOX_FILTER_DIR")
   BWRAP_ARGS+=(--ro-bind "$FILTER_HOST_DIR" "$SANDBOX_FILTER_DIR")
 fi
